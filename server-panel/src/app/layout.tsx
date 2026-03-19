@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Home Server Dashboard",
-  description: "Live system monitoring, ports, and hosted apps",
+  title: "Server Control Panel",
+  description: "All-in-one server management: monitoring, processes, Minecraft, SSL, and Linux control",
 };
 
 export default function RootLayout({
