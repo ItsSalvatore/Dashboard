@@ -44,6 +44,11 @@ async function isInstalled(pkg: InstallablePackage): Promise<boolean> {
 }
 
 export async function GET() {
+  const { authorized } = await requireAuth();
+  if (!authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const [docker, nginx, certbot] = await Promise.all([
       isInstalled("docker"),

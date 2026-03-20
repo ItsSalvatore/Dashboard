@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import si from "systeminformation";
+import { requireAuth } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: Request) {
+  const { authorized } = await requireAuth();
+  if (!authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const limit = Math.min(parseInt(searchParams.get("limit") ?? "50", 10), 200);
   const sort = searchParams.get("sort") ?? "cpu";

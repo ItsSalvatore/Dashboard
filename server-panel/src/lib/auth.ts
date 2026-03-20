@@ -1,17 +1,13 @@
 import { cookies } from "next/headers";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
+import {
+  getAuthSecret,
+  isAuthConfigured,
+  PANEL_SESSION_COOKIE_NAME,
+} from "./auth-config";
 
-const COOKIE_NAME = "panel_session";
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-
-function getSecret(): string {
-  const secret = process.env.PANEL_SECRET || process.env.PANEL_PASSWORD_HASH || process.env.PANEL_PASSWORD;
-  if (!secret || !secret.trim()) {
-    throw new Error("PANEL_SECRET or PANEL_PASSWORD must be set");
-  }
-  return secret.trim();
-}
 
 export async function verifyPassword(password: string): Promise<boolean> {
   const hash = process.env.PANEL_PASSWORD_HASH?.trim();
@@ -28,7 +24,7 @@ export async function verifyPassword(password: string): Promise<boolean> {
 }
 
 function sign(payload: string): string {
-  const sig = createHmac("sha256", getSecret()).update(payload).digest("hex");
+  const sig = createHmac("sha256", getAuthSecret()).update(payload).digest("hex");
   return `${Buffer.from(payload).toString("base64url")}.${sig}`;
 }
 
@@ -36,7 +32,7 @@ function verify(token: string): { valid: boolean; payload?: { user: string; exp:
   try {
     const [raw, sig] = token.split(".");
     if (!raw || !sig) return { valid: false };
-    const expected = createHmac("sha256", getSecret()).update(raw).digest("hex");
+    const expected = createHmac("sha256", getAuthSecret()).update(raw).digest("hex");
     if (!timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) {
       return { valid: false };
     }
@@ -53,18 +49,25 @@ function verify(token: string): { valid: boolean; payload?: { user: string; exp:
 
 export async function getSession(): Promise<boolean> {
   const cookieStore = await cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value;
+  const token = cookieStore.get(PANEL_SESSION_COOKIE_NAME)?.value;
   if (!token) return false;
   const { valid } = verify(token);
   return valid;
 }
 
-export async function requireAuth(): Promise<{ authorized: boolean }> {
-  if (!process.env.PANEL_PASSWORD && !process.env.PANEL_PASSWORD_HASH) {
-    return { authorized: true };
+export async function getAuthState(): Promise<{ configured: boolean; authorized: boolean }> {
+  if (!isAuthConfigured()) {
+    return { configured: false, authorized: false };
   }
-  const authorized = await getSession();
-  return { authorized };
+
+  return {
+    configured: true,
+    authorized: await getSession(),
+  };
+}
+
+export async function requireAuth(): Promise<{ configured: boolean; authorized: boolean }> {
+  return getAuthState();
 }
 
 export function createSessionToken(): string {
@@ -77,7 +80,7 @@ export function createSessionToken(): string {
 
 export function getCookieConfig() {
   return {
-    name: COOKIE_NAME,
+    name: PANEL_SESSION_COOKIE_NAME,
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax" as const,

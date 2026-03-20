@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import si from "systeminformation";
+import { requireAuth } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -34,6 +35,11 @@ const COMMON_APPS: { name: string; port: number }[] = [
 ];
 
 export async function GET(request: Request) {
+  const { authorized } = await requireAuth();
+  if (!authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const baseUrl = searchParams.get("baseUrl") ?? "http://localhost";
 

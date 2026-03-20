@@ -14,9 +14,26 @@ import AppCard from "./AppCard";
 type SystemData = {
   cpu: { current: number; cores: number };
   memory: { usedPercent: number; used: number; total: number };
-  disk: { usedPercent: number; used: number; total: number } | null;
+  disk: { usedPercent: number; used: number; total: number; mount: string } | null;
   gpu: { model: string; vram: number; utilizationGpu: number | null } | null;
   os: { hostname: string; uptime: number; platform: string };
+  storage: {
+    volumes: {
+      mount: string;
+      fs: string;
+      type: string;
+      total: number;
+      used: number;
+      free: number;
+      usedPercent: number;
+    }[];
+    devices: {
+      name: string;
+      type: string;
+      interface: string;
+      size: number;
+    }[];
+  };
 } | null;
 
 type Process = {
@@ -41,7 +58,85 @@ type AppInfo = {
   pid: number | null;
 };
 
-type Tab = "overview" | "apps" | "docker" | "websites" | "firewall" | "dns" | "ftp" | "backups" | "minecraft" | "ssl" | "server" | "installs" | "files" | "notes";
+type Integration = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  enabled: boolean;
+  url: string;
+  healthUrl: string;
+  port: string;
+  category: "media" | "files" | "monitoring" | "ops" | "custom";
+  status: "healthy" | "offline" | "disabled";
+};
+
+type SafeAction = {
+  id: string;
+  label: string;
+  description: string;
+};
+
+type AuditEntry = {
+  timestamp: string;
+  action: string;
+  actor: string;
+  outcome: "success" | "failure";
+  details?: Record<string, string | number | boolean | null>;
+};
+
+type PanelSettings = {
+  dashboard: {
+    pollingIntervalMs: number;
+    showGpu: boolean;
+    showProcessTable: boolean;
+    compactMode: boolean;
+  };
+  defaults: {
+    webserver: "nginx" | "ols";
+    backupDirectoryLabel: string;
+    fileManagerRootLabel: string;
+  };
+  security: {
+    sshPort: string;
+    fail2banEnabled: boolean;
+  };
+};
+
+type TwoFactorState = {
+  enabled: boolean;
+  issuer: string;
+  label: string;
+  setupPending: boolean;
+};
+
+type Tab =
+  | "overview"
+  | "apps"
+  | "docker"
+  | "websites"
+  | "firewall"
+  | "dns"
+  | "ftp"
+  | "backups"
+  | "minecraft"
+  | "ssl"
+  | "server"
+  | "installs"
+  | "files"
+  | "notes"
+  | "integrations"
+  | "settings"
+  | "actions"
+  | "audit";
+
+type OverviewSectionKey =
+  | "metrics"
+  | "actions"
+  | "trends"
+  | "storage"
+  | "resources"
+  | "processes";
 
 type DockerContainer = {
   id: string;
@@ -55,7 +150,11 @@ type DockerContainer = {
 
 type Website = { domain: string; configPath: string; root: string };
 
-const POLL_INTERVAL = 3000;
+const DEFAULT_POLL_INTERVAL = 3000;
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -71,6 +170,108 @@ function formatUptime(seconds: number): string {
   if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
+}
+
+function MetricCard({
+  label,
+  value,
+  meta,
+  toneClass,
+}: {
+  label: string;
+  value: string;
+  meta: string;
+  toneClass: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)]/95 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+      <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--muted)]">
+        {label}
+      </p>
+      <p className={cx("mt-3 text-3xl font-semibold tracking-tight", toneClass)}>{value}</p>
+      <p className="mt-2 text-sm text-[var(--muted)]">{meta}</p>
+    </div>
+  );
+}
+
+function QuickActionCard({
+  title,
+  description,
+  meta,
+  onClick,
+}: {
+  title: string;
+  description: string;
+  meta: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="group rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-left transition hover:border-[var(--accent)]/40 hover:bg-[var(--card)]/80"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-base font-semibold text-[var(--foreground)]">{title}</h3>
+        <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[11px] uppercase tracking-[0.18em] text-[var(--muted)] transition group-hover:border-[var(--accent)]/30 group-hover:text-[var(--accent)]">
+          Open
+        </span>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{description}</p>
+      <p className="mt-4 text-xs text-[var(--accent)]">{meta}</p>
+    </button>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  description,
+  defaultOpen = true,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  description?: string;
+  defaultOpen?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+  children: React.ReactNode;
+}) {
+  const controlled = typeof open === "boolean" && typeof onToggle === "function";
+
+  if (!controlled) {
+    return (
+      <details
+        open={defaultOpen}
+        className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5"
+      >
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">{title}</h2>
+            {description && <p className="mt-1 text-sm text-[var(--muted)]">{description}</p>}
+          </div>
+          <span className="text-xs text-[var(--muted)]">Toggle</span>
+        </summary>
+        <div className="mt-4">{children}</div>
+      </details>
+    );
+  }
+
+  return (
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <div>
+          <h2 className="text-base font-semibold">{title}</h2>
+          {description && <p className="mt-1 text-sm text-[var(--muted)]">{description}</p>}
+        </div>
+        <span className="text-xs text-[var(--muted)]">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && <div className="mt-4">{children}</div>}
+    </section>
+  );
 }
 
 export default function Dashboard() {
@@ -139,6 +340,34 @@ export default function Dashboard() {
   const [newCreateDnsZone, setNewCreateDnsZone] = useState(false);
   const [newCreateSsl, setNewCreateSsl] = useState(false);
   const [websiteDetailAction, setWebsiteDetailAction] = useState<string | null>(null);
+  const [panelSettings, setPanelSettings] = useState<PanelSettings | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [twoFactorState, setTwoFactorState] = useState<TwoFactorState | null>(null);
+  const [twoFactorLoading, setTwoFactorLoading] = useState(false);
+  const [twoFactorSetupSecret, setTwoFactorSetupSecret] = useState("");
+  const [twoFactorOtpAuthUri, setTwoFactorOtpAuthUri] = useState("");
+  const [twoFactorForm, setTwoFactorForm] = useState({
+    password: "",
+    code: "",
+    issuer: "Server Panel",
+    label: "admin",
+  });
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [integrationsSaving, setIntegrationsSaving] = useState(false);
+  const [safeActions, setSafeActions] = useState<SafeAction[]>([]);
+  const [actionRunning, setActionRunning] = useState<string | null>(null);
+  const [actionOutput, setActionOutput] = useState<{ label: string; output: string } | null>(null);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [overviewSections, setOverviewSections] = useState<Record<OverviewSectionKey, boolean>>({
+    metrics: true,
+    actions: true,
+    trends: false,
+    storage: false,
+    resources: true,
+    processes: false,
+  });
 
   const fetchSystem = useCallback(async () => {
     try {
@@ -325,6 +554,72 @@ export default function Dashboard() {
     }
   }, []);
 
+  const fetchSettings = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const data = await res.json();
+        setPanelSettings(data);
+        setNewWebserver(data.defaults?.webserver === "ols" ? "ols" : "nginx");
+      }
+    } catch {
+      setPanelSettings(null);
+    }
+  }, []);
+
+  const fetchTwoFactorState = useCallback(async () => {
+    try {
+      const res = await fetch("/api/auth/2fa");
+      if (res.ok) {
+        const data = await res.json();
+        setTwoFactorState(data);
+        setTwoFactorForm((prev) => ({
+          ...prev,
+          issuer: data.issuer || prev.issuer,
+          label: data.label || prev.label,
+        }));
+      }
+    } catch {
+      setTwoFactorState(null);
+    }
+  }, []);
+
+  const fetchIntegrations = useCallback(async () => {
+    try {
+      const res = await fetch("/api/integrations");
+      if (res.ok) {
+        const data = await res.json();
+        setIntegrations(data.integrations ?? []);
+      }
+    } catch {
+      setIntegrations([]);
+    }
+  }, []);
+
+  const fetchSafeActions = useCallback(async () => {
+    try {
+      const res = await fetch("/api/actions");
+      if (res.ok) {
+        const data = await res.json();
+        setSafeActions(data.actions ?? []);
+      }
+    } catch {
+      setSafeActions([]);
+    }
+  }, []);
+
+  const fetchAuditEntries = useCallback(async () => {
+    try {
+      const res = await fetch("/api/audit?limit=50");
+      if (res.ok) {
+        const data = await res.json();
+        setAuditEntries(data.entries ?? []);
+      }
+    } catch {
+      setAuditEntries([]);
+    }
+  }, []);
+
   const fetchFileManager = useCallback(async (path: string) => {
     setFileManagerLoading(true);
     try {
@@ -351,10 +646,45 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const media = window.matchMedia("(max-width: 767px)");
+    const applyViewportMode = (matches: boolean) => {
+      setIsMobileViewport(matches);
+      setOverviewSections({
+        metrics: true,
+        actions: true,
+        trends: !matches,
+        storage: !matches,
+        resources: true,
+        processes: !matches,
+      });
+      if (!matches) {
+        setMobileNavOpen(false);
+      }
+    };
+
+    applyViewportMode(media.matches);
+
+    const listener = (event: MediaQueryListEvent) => applyViewportMode(event.matches);
+    media.addEventListener("change", listener);
+    return () => media.removeEventListener("change", listener);
+  }, []);
+
+  useEffect(() => {
     if (activeTab === "files") fetchFileManager(fileManagerPath);
     if (activeTab === "notes") fetchNotes();
     if (activeTab === "websites" && selectedWebsite) fetchWebsiteDetail(selectedWebsite);
-  }, [activeTab, fileManagerPath, fetchFileManager, fetchNotes, selectedWebsite, fetchWebsiteDetail]);
+    if (activeTab === "settings") fetchSettings();
+    if (activeTab === "settings") fetchTwoFactorState();
+    if (activeTab === "integrations") fetchIntegrations();
+    if (activeTab === "actions") fetchSafeActions();
+    if (activeTab === "audit") fetchAuditEntries();
+  }, [activeTab, fileManagerPath, fetchFileManager, fetchNotes, selectedWebsite, fetchWebsiteDetail, fetchSettings, fetchTwoFactorState, fetchIntegrations, fetchSafeActions, fetchAuditEntries]);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [activeTab]);
 
   useEffect(() => {
     if (selectedWebsite) fetchWebsiteDetail(selectedWebsite);
@@ -375,6 +705,11 @@ export default function Dashboard() {
     fetchFtp();
     fetchBackups();
     fetchInstallStatus();
+    fetchSettings();
+    fetchTwoFactorState();
+    fetchIntegrations();
+    fetchSafeActions();
+    fetchAuditEntries();
     const t = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
       fetchSystem();
@@ -393,7 +728,12 @@ export default function Dashboard() {
       if (activeTab === "installs") fetchInstallStatus();
       if (activeTab === "files") fetchFileManager(fileManagerPath);
       if (activeTab === "notes") fetchNotes();
-    }, POLL_INTERVAL);
+      if (activeTab === "settings") fetchSettings();
+      if (activeTab === "settings") fetchTwoFactorState();
+      if (activeTab === "integrations") fetchIntegrations();
+      if (activeTab === "actions") fetchSafeActions();
+      if (activeTab === "audit") fetchAuditEntries();
+    }, panelSettings?.dashboard.pollingIntervalMs ?? DEFAULT_POLL_INTERVAL);
     return () => clearInterval(t);
   }, [
     fetchSystem,
@@ -406,8 +746,14 @@ export default function Dashboard() {
     fetchInstallStatus,
     fetchFileManager,
     fetchNotes,
+    fetchSettings,
+    fetchTwoFactorState,
+    fetchIntegrations,
+    fetchSafeActions,
+    fetchAuditEntries,
     activeTab,
     fileManagerPath,
+    panelSettings?.dashboard.pollingIntervalMs,
   ]);
 
   const killProcess = async (pid: number) => {
@@ -565,62 +911,432 @@ export default function Dashboard() {
     }
   };
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "overview", label: "Overview" },
-    { id: "apps", label: `Hosted Apps (${apps.length})` },
-    { id: "docker", label: "Docker" },
-    { id: "websites", label: "Websites" },
-    { id: "firewall", label: "Firewall" },
-    { id: "dns", label: "DNS" },
-    { id: "ftp", label: "FTP" },
-    { id: "backups", label: "Backups" },
-    { id: "minecraft", label: "Minecraft" },
-    { id: "ssl", label: "SSL" },
-    { id: "server", label: "Server" },
-    { id: "installs", label: "One-Click Installs" },
-    { id: "files", label: "File Manager" },
-    { id: "notes", label: "Services Notes" },
+  const saveSettings = async () => {
+    if (!panelSettings) return;
+    setSettingsSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(panelSettings),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPanelSettings(data.settings ?? panelSettings);
+      } else {
+        setError(data.error || "Failed to save settings");
+      }
+    } catch {
+      setError("Failed to save settings");
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const startTwoFactorSetup = async () => {
+    setTwoFactorLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/2fa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "setup",
+          password: twoFactorForm.password,
+          issuer: twoFactorForm.issuer,
+          label: twoFactorForm.label,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTwoFactorSetupSecret(data.secret || "");
+        setTwoFactorOtpAuthUri(data.otpauthUri || "");
+        fetchTwoFactorState();
+      } else {
+        setError(data.error || "Failed to start 2FA setup");
+      }
+    } catch {
+      setError("Failed to start 2FA setup");
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const confirmTwoFactorSetup = async () => {
+    setTwoFactorLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/2fa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "confirm",
+          code: twoFactorForm.code,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTwoFactorSetupSecret("");
+        setTwoFactorOtpAuthUri("");
+        setTwoFactorForm((prev) => ({ ...prev, code: "", password: "" }));
+        fetchTwoFactorState();
+      } else {
+        setError(data.error || "Failed to confirm 2FA");
+      }
+    } catch {
+      setError("Failed to confirm 2FA");
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const disableTwoFactor = async () => {
+    setTwoFactorLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/2fa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "disable",
+          password: twoFactorForm.password,
+          code: twoFactorForm.code,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTwoFactorSetupSecret("");
+        setTwoFactorOtpAuthUri("");
+        setTwoFactorForm((prev) => ({ ...prev, code: "", password: "" }));
+        fetchTwoFactorState();
+      } else {
+        setError(data.error || "Failed to disable 2FA");
+      }
+    } catch {
+      setError("Failed to disable 2FA");
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const saveIntegrations = async (nextIntegrations: Integration[]) => {
+    setIntegrationsSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/integrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ integrations: nextIntegrations }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setIntegrations(data.integrations ?? nextIntegrations);
+        fetchIntegrations();
+      } else {
+        setError(data.error || "Failed to save integrations");
+      }
+    } catch {
+      setError("Failed to save integrations");
+    } finally {
+      setIntegrationsSaving(false);
+    }
+  };
+
+  const updateIntegration = (
+    id: string,
+    field: keyof Pick<Integration, "enabled" | "url" | "healthUrl" | "port">,
+    value: boolean | string
+  ) => {
+    setIntegrations((prev) =>
+      prev.map((integration) =>
+        integration.id === id ? { ...integration, [field]: value } : integration
+      )
+    );
+  };
+
+  const toggleOverviewSection = (key: OverviewSectionKey) => {
+    setOverviewSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const runSafeAction = async (action: SafeAction) => {
+    setActionRunning(action.id);
+    setError(null);
+    try {
+      const res = await fetch("/api/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: action.id }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActionOutput({
+          label: data.label || action.label,
+          output: data.output || "Command completed with no output.",
+        });
+        fetchAuditEntries();
+      } else {
+        setError(data.error || "Failed to run action");
+      }
+    } catch {
+      setError("Failed to run action");
+    } finally {
+      setActionRunning(null);
+    }
+  };
+
+  const navGroups: {
+    title: string;
+    items: { id: Tab; label: string; meta?: string }[];
+  }[] = [
+    {
+      title: "Primary",
+      items: [
+        { id: "overview", label: "Overview", meta: "Health and recent activity" },
+        { id: "websites", label: "Sites", meta: `${websites.length} configured` },
+        { id: "docker", label: "Containers", meta: `${dockerContainers.length} detected` },
+        { id: "apps", label: "Hosted Apps", meta: `${apps.length} reachable` },
+      ],
+    },
+    {
+      title: "Operations",
+      items: [
+        { id: "backups", label: "Backups" },
+        { id: "ssl", label: "SSL" },
+        { id: "dns", label: "DNS" },
+        { id: "firewall", label: "Firewall" },
+        { id: "files", label: "Files" },
+        { id: "integrations", label: "Integrations", meta: "Immich, Nextcloud, custom apps" },
+      ],
+    },
+    {
+      title: "System",
+      items: [
+        { id: "server", label: "Server" },
+        { id: "installs", label: "Installs" },
+        { id: "ftp", label: "FTP" },
+        { id: "minecraft", label: "Minecraft" },
+        { id: "actions", label: "Safe Actions", meta: "Approved CLI operations" },
+        { id: "audit", label: "Audit", meta: "Recent admin activity" },
+        { id: "notes", label: "Notes" },
+        { id: "settings", label: "Settings", meta: "Live dashboard and defaults" },
+      ],
+    },
+  ];
+  const compactNavItems = navGroups.flatMap((group) => group.items);
+  const livePollMs = panelSettings?.dashboard.pollingIntervalMs ?? DEFAULT_POLL_INTERVAL;
+  const compactMode = Boolean(panelSettings?.dashboard.compactMode);
+  const showGpu = panelSettings?.dashboard.showGpu ?? true;
+  const showProcessTable = panelSettings?.dashboard.showProcessTable ?? true;
+
+  const serverName = system?.os?.hostname || serverInfo?.hostname || "Server Panel";
+  const healthChecks = [
+    { label: "Web server", healthy: Boolean(installStatus?.nginx.installed), detail: installStatus?.nginx.installed ? "nginx ready" : "nginx missing" },
+    { label: "Docker", healthy: dockerAvailable, detail: dockerAvailable ? `${dockerContainers.length} containers visible` : "runtime unavailable" },
+    { label: "SSL", healthy: Boolean(ssl?.certbotInstalled), detail: ssl?.certbotInstalled ? `${ssl?.certs.length ?? 0} certs found` : "certbot missing" },
+    { label: "Firewall", healthy: Boolean(firewall?.enabled), detail: firewall?.enabled ? `${firewall.rules.length} rules active` : "ufw disabled" },
+  ];
+  const healthyChecks = healthChecks.filter((item) => item.healthy).length;
+  const healthTone =
+    healthyChecks >= 3 ? "Healthy" : healthyChecks >= 2 ? "Needs attention" : "At risk";
+  const recentItems = [
+    ...websites.slice(0, 3).map((site) => ({
+      name: site.domain,
+      meta: site.root,
+      status: "Site",
+    })),
+    ...dockerContainers.slice(0, 3).map((container) => ({
+      name: container.name,
+      meta: container.status || container.image,
+      status: container.state === "running" ? "Running" : "Stopped",
+    })),
+  ].slice(0, 6);
+  const topVolumes = system?.storage?.volumes?.slice(0, 4) ?? [];
+  const storageDevices = system?.storage?.devices?.slice(0, 4) ?? [];
+  const enabledIntegrations = integrations.filter((integration) => integration.enabled);
+  const createSiteSummary = [
+    `Web root: ${panelSettings?.defaults.fileManagerRootLabel || "/var/www"}/${newDomain.trim() || "example.com"}`,
+    `Web server: ${newWebserver === "nginx" ? "nginx" : "OpenLiteSpeed"}`,
+    newWordpress ? "App stack: WordPress in Docker" : "App stack: static site scaffold",
+    newCreateDnsZone ? "DNS zone will be created" : "DNS handled externally",
+    newCreateSsl ? "SSL will be requested" : "SSL can be added later",
   ];
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      <header className="sticky top-0 z-20 shrink-0 border-b border-[var(--border)] bg-[var(--background)]/95 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 p-3 md:p-4">
-          <h1 className="truncate text-lg font-semibold tracking-tight md:text-xl">
-            Server Panel
-          </h1>
-          <nav className="flex flex-wrap items-center gap-1.5">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors md:text-sm ${
-                activeTab === t.id
-                  ? "bg-[var(--accent)]/20 text-[var(--accent)]"
-                  : "text-[var(--muted)] hover:bg-[var(--border)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-          <span className="hidden items-center gap-1.5 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-400 sm:inline-flex">
-            <span className="h-1 w-1 rounded-full bg-emerald-400 animate-pulse" />
-            Live
-          </span>
+    <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.12),_transparent_35%),_var(--background)]">
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-40 xl:hidden">
           <button
-            onClick={async () => {
-              await fetch("/api/auth/logout", { method: "POST" });
-              window.location.reload();
-            }}
-            className="rounded-md px-2 py-1 text-xs text-[var(--muted)] hover:bg-[var(--border)] hover:text-[var(--foreground)]"
-          >
-            Logout
-          </button>
-        </nav>
+            aria-label="Close navigation"
+            onClick={() => setMobileNavOpen(false)}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          />
+          <div className="absolute inset-y-0 left-0 w-[86%] max-w-sm border-r border-[var(--border)] bg-[var(--background)] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-5">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--accent)]">
+                  Server Panel
+                </p>
+                <p className="mt-2 text-lg font-semibold">{serverName}</p>
+              </div>
+              <button
+                onClick={() => setMobileNavOpen(false)}
+                className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm text-[var(--muted)]"
+              >
+                Close
+              </button>
+            </div>
+            <nav className="dashboard-scroll h-[calc(100%-84px)] space-y-6 px-4 py-5">
+              {navGroups.map((group) => (
+                <details key={group.title} open className="rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+                  <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-[var(--foreground)]">
+                    {group.title}
+                  </summary>
+                  <div className="space-y-1 border-t border-[var(--border)] p-2">
+                    {group.items.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => setActiveTab(item.id)}
+                        className={cx(
+                          "w-full rounded-xl px-3 py-3 text-left transition",
+                          activeTab === item.id
+                            ? "bg-[var(--accent)]/12 text-[var(--accent)]"
+                            : "text-[var(--foreground)] hover:bg-black/20"
+                        )}
+                      >
+                        <div className="font-medium">{item.label}</div>
+                        {item.meta && <div className="mt-1 text-xs text-[var(--muted)]">{item.meta}</div>}
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </nav>
+          </div>
         </div>
-      </header>
+      )}
 
-      <main className="dashboard-content dashboard-scroll flex-1 p-4 md:p-5">
+      <aside className="hidden w-72 shrink-0 border-r border-[var(--border)] bg-black/20 xl:flex xl:flex-col">
+        <div className="border-b border-[var(--border)] px-6 py-6">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--accent)]">
+            Server Panel
+          </p>
+          <h1 className="mt-3 text-2xl font-semibold tracking-tight">{serverName}</h1>
+          <p className="mt-2 text-sm text-[var(--muted)]">
+            Cleaner hosting workflows for sites, containers, and server operations.
+          </p>
+        </div>
+
+        <nav className="dashboard-scroll flex-1 space-y-6 px-4 py-5">
+          {navGroups.map((group) => (
+            <div key={group.title}>
+              <p className="px-3 text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                {group.title}
+              </p>
+              <div className="mt-2 space-y-1">
+                {group.items.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={cx(
+                      "w-full rounded-2xl border px-3 py-3 text-left transition",
+                      activeTab === item.id
+                        ? "border-[var(--accent)]/40 bg-[var(--accent)]/10"
+                        : "border-transparent hover:border-[var(--border)] hover:bg-[var(--card)]/70"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-[var(--foreground)]">{item.label}</span>
+                      {activeTab === item.id && (
+                        <span className="rounded-full bg-[var(--accent)]/15 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
+                          Open
+                        </span>
+                      )}
+                    </div>
+                    {item.meta && <p className="mt-1 text-xs text-[var(--muted)]">{item.meta}</p>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        <div className="border-t border-[var(--border)] p-4">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">System health</p>
+            <p className="mt-2 text-lg font-semibold">{healthTone}</p>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              {healthyChecks}/{healthChecks.length} core services ready
+            </p>
+          </div>
+        </div>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="sticky top-0 z-20 shrink-0 border-b border-[var(--border)] bg-[var(--background)]/90 backdrop-blur-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 md:px-6">
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Live server</p>
+              <div className="mt-1 flex items-center gap-3">
+                <h2 className="text-xl font-semibold tracking-tight md:text-2xl">{serverName}</h2>
+                <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300">
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  {healthTone}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setMobileNavOpen(true)}
+                className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] xl:hidden"
+              >
+                Menu
+              </button>
+              <button
+                onClick={() => setActiveTab("websites")}
+                className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-300"
+              >
+                Create Site
+              </button>
+              <button
+                onClick={() => setActiveTab("docker")}
+                className="hidden rounded-xl border border-[var(--border)] px-4 py-2 text-sm text-[var(--foreground)] transition hover:bg-[var(--card)] sm:inline-flex"
+              >
+                Manage Containers
+              </button>
+              <button
+                onClick={async () => {
+                  await fetch("/api/auth/logout", { method: "POST" });
+                  window.location.reload();
+                }}
+                className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm text-[var(--muted)] transition hover:bg-[var(--card)] hover:text-[var(--foreground)]"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+          <div className="dashboard-scroll hidden border-t border-[var(--border)] px-4 py-3 md:block xl:hidden">
+            <div className="flex gap-2">
+              {compactNavItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  className={cx(
+                    "shrink-0 rounded-xl border px-3 py-2 text-sm transition",
+                    activeTab === item.id
+                      ? "border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]"
+                      : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--card)]"
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </header>
+
+        <main className={cx("dashboard-content dashboard-scroll flex-1 px-4 py-4 md:px-6 md:py-5", compactMode && "space-y-4")}>
       {error && (
         <div className="mb-4 flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
           {error}
@@ -632,75 +1348,276 @@ export default function Dashboard() {
 
       {activeTab === "overview" && (
         <>
-          <section className="mb-6 grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">CPU</p>
-              <p className="mt-1 font-mono text-2xl font-bold text-[var(--accent)]">
-                {system?.cpu?.current ?? "—"}%
+          <section className="mb-6 grid gap-4 xl:grid-cols-[1.4fr_0.95fr]">
+            <div className="rounded-3xl border border-[var(--border)] bg-[linear-gradient(135deg,rgba(34,211,238,0.16),rgba(24,24,27,0.96)_55%)] p-6">
+              <p className="text-xs uppercase tracking-[0.22em] text-[var(--accent)]">Overview</p>
+              <h3 className="mt-3 max-w-2xl text-3xl font-semibold tracking-tight text-[var(--foreground)]">
+                Focus on sites and containers first, with the rest of the server in reach.
+              </h3>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                This panel is now organized around the workflows you use most often:
+                create a site, manage containers, review health, and jump into fixes fast.
               </p>
-              <p className="mt-0.5 text-xs text-[var(--muted)]">{system?.cpu?.cores ?? "—"} cores</p>
-            </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
-                Memory
-              </p>
-              <p className="mt-1 font-mono text-2xl font-bold text-amber-400">
-                {system?.memory?.usedPercent ?? "—"}%
-              </p>
-              <p className="mt-0.5 text-xs text-[var(--muted)]">
-                {system?.memory
-                  ? `${formatBytes(system.memory.used)} / ${formatBytes(system.memory.total)}`
-                  : "—"}
-              </p>
-            </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">Disk</p>
-              <p className="mt-1 font-mono text-2xl font-bold text-violet-400">
-                {system?.disk?.usedPercent ?? "—"}%
-              </p>
-              <p className="mt-0.5 text-xs text-[var(--muted)]">
-                {system?.disk
-                  ? `${formatBytes(system.disk.used)} / ${formatBytes(system.disk.total)}`
-                  : "—"}
-              </p>
-            </div>
-            {system?.gpu && (
-              <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-                <p className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">GPU</p>
-                <p className="mt-1 font-mono text-lg font-bold text-emerald-400 truncate" title={system.gpu.model}>
-                  {system.gpu.model}
-                </p>
-                <p className="mt-0.5 text-xs text-[var(--muted)]">
-                  {system.gpu.utilizationGpu != null ? `${system.gpu.utilizationGpu}%` : "—"}
-                </p>
+              <div className="mt-4 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
+                <span className="rounded-full border border-[var(--border)] px-3 py-1">
+                  Live refresh every {Math.round(livePollMs / 1000)}s
+                </span>
+                <span className="rounded-full border border-[var(--border)] px-3 py-1">
+                  {showGpu ? "GPU metrics visible" : "GPU metrics hidden"}
+                </span>
+                <span className="rounded-full border border-[var(--border)] px-3 py-1">
+                  {enabledIntegrations.length} integrations enabled
+                </span>
               </div>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  onClick={() => setActiveTab("websites")}
+                  className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                >
+                  Create Site
+                </button>
+                <button
+                  onClick={() => setActiveTab("docker")}
+                  className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm hover:bg-black/20"
+                >
+                  Manage Containers
+                </button>
+                <button
+                  onClick={() => setActiveTab("backups")}
+                  className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm hover:bg-black/20"
+                >
+                  Review Backups
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                    Server snapshot
+                  </p>
+                  <p className="mt-2 text-xl font-semibold">{healthTone}</p>
+                </div>
+                <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)]">
+                  Live
+                </span>
+              </div>
+              <div className="mt-5 space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-[var(--muted)]">Hostname</span>
+                  <span className="font-mono">{serverName}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-[var(--muted)]">Uptime</span>
+                  <span>{system?.os ? formatUptime(system.os.uptime) : "—"}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-[var(--muted)]">Containers</span>
+                  <span>{dockerContainers.length}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-[var(--muted)]">Sites</span>
+                  <span>{websites.length}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <CollapsibleSection
+            title="Live metrics"
+            description="CPU, memory, disk, app count, and GPU telemetry."
+            defaultOpen
+            open={isMobileViewport ? overviewSections.metrics : undefined}
+            onToggle={isMobileViewport ? () => toggleOverviewSection("metrics") : undefined}
+          >
+          <div className={cx("grid gap-4 md:grid-cols-2", showGpu ? "xl:grid-cols-5" : "xl:grid-cols-4")}>
+            <MetricCard
+              label="CPU"
+              value={`${system?.cpu?.current ?? "—"}%`}
+              meta={`${system?.cpu?.cores ?? "—"} cores in use`}
+              toneClass="text-[var(--accent)]"
+            />
+            <MetricCard
+              label="Memory"
+              value={`${system?.memory?.usedPercent ?? "—"}%`}
+              meta={
+                system?.memory
+                  ? `${formatBytes(system.memory.used)} of ${formatBytes(system.memory.total)}`
+                  : "Waiting for memory stats"
+              }
+              toneClass="text-amber-400"
+            />
+            <MetricCard
+              label="Disk"
+              value={`${system?.disk?.usedPercent ?? "—"}%`}
+              meta={
+                system?.disk
+                  ? `${formatBytes(system.disk.used)} of ${formatBytes(system.disk.total)}`
+                  : "Waiting for disk stats"
+              }
+              toneClass="text-violet-400"
+            />
+            <MetricCard
+              label="Active apps"
+              value={`${apps.length}`}
+              meta={`${ports.length} listening ports detected`}
+              toneClass="text-emerald-400"
+            />
+            {showGpu && (
+              <MetricCard
+                label="GPU"
+                value={system?.gpu?.utilizationGpu != null ? `${system.gpu.utilizationGpu}%` : system?.gpu?.model || "—"}
+                meta={
+                  system?.gpu
+                    ? `${system.gpu.model} · ${system.gpu.vram ? `${system.gpu.vram} MB VRAM` : "No VRAM data"}`
+                    : "GPU not detected"
+                }
+                toneClass="text-cyan-300"
+              />
             )}
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">Apps</p>
-              <p className="mt-1 font-mono text-2xl font-bold text-emerald-400">{apps.length}</p>
-              <p className="mt-0.5 text-xs text-[var(--muted)]">{ports.length} ports</p>
-            </div>
-          </section>
+          </div>
+          </CollapsibleSection>
 
-          <section className="mb-6">
-            <h2 className="mb-3 text-sm font-semibold">Quick actions</h2>
-            <div className="flex flex-wrap gap-2">
-              <button onClick={() => setActiveTab("docker")} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--border)]/50">
-                Docker ({dockerContainers.length})
-              </button>
-              <button onClick={() => setActiveTab("websites")} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--border)]/50">
-                Websites ({websites.length})
-              </button>
-              <button onClick={() => setActiveTab("backups")} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--border)]/50">
-                Backups
-              </button>
-              <button onClick={() => setActiveTab("notes")} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--border)]/50">
-                Services Notes
-              </button>
+          <div className="mb-6" />
+          <CollapsibleSection
+            title="Priority actions"
+            description="Fast paths for the core jobs you do most often."
+            defaultOpen
+            open={isMobileViewport ? overviewSections.actions : undefined}
+            onToggle={isMobileViewport ? () => toggleOverviewSection("actions") : undefined}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Recommended flow</h2>
+              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                Based on the new Stitch layout
+              </p>
             </div>
-          </section>
+            <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+              <QuickActionCard
+                title="Create Site"
+                description="Spin up a static site or WordPress stack with optional DNS and SSL from one place."
+                meta={`${websites.length} sites currently configured`}
+                onClick={() => setActiveTab("websites")}
+              />
+              <QuickActionCard
+                title="Manage Containers"
+                description="Check running containers, restart failed ones, and review exposed ports quickly."
+                meta={dockerAvailable ? `${dockerContainers.length} containers visible` : "Docker runtime unavailable"}
+                onClick={() => setActiveTab("docker")}
+              />
+              <QuickActionCard
+                title="Backups"
+                description="Create and review snapshots before changes or after a deployment."
+                meta={`${backups.length} backups available`}
+                onClick={() => setActiveTab("backups")}
+              />
+              <QuickActionCard
+                title="SSL Certificates"
+                description="Track certificate coverage and renew certbot-managed domains without leaving the panel."
+                meta={`${ssl?.certs.length ?? 0} certificates found`}
+                onClick={() => setActiveTab("ssl")}
+              />
+            </div>
+          </CollapsibleSection>
 
-          <section className="mb-6 grid gap-4 md:grid-cols-2">
+          <div className="mb-6" />
+          <CollapsibleSection
+            title="Storage"
+            description="Mounted volumes and detected drives."
+            defaultOpen={!isMobileViewport}
+            open={isMobileViewport ? overviewSections.storage : undefined}
+            onToggle={isMobileViewport ? () => toggleOverviewSection("storage") : undefined}
+          >
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Storage volumes</h2>
+                <button
+                  onClick={() => setActiveTab("server")}
+                  className="text-xs text-[var(--accent)] hover:underline"
+                >
+                  Open server tools
+                </button>
+              </div>
+              <div className="space-y-3">
+                {topVolumes.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--muted)]">
+                    No storage volumes detected.
+                  </p>
+                ) : (
+                  topVolumes.map((volume) => (
+                    <div key={`${volume.mount}-${volume.fs}`} className="rounded-xl border border-[var(--border)] px-4 py-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{volume.mount || volume.fs}</p>
+                          <p className="truncate text-sm text-[var(--muted)]">
+                            {volume.fs} · {volume.type || "volume"}
+                          </p>
+                        </div>
+                        <span className="font-mono text-sm text-[var(--foreground)]">
+                          {volume.usedPercent}%
+                        </span>
+                      </div>
+                      <div className="mt-3 h-2 rounded-full bg-black/20">
+                        <div
+                          className="h-2 rounded-full bg-violet-400"
+                          style={{ width: `${Math.min(volume.usedPercent, 100)}%` }}
+                        />
+                      </div>
+                      <p className="mt-2 text-xs text-[var(--muted)]">
+                        {formatBytes(volume.used)} used of {formatBytes(volume.total)}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Detected drives</h2>
+                <button
+                  onClick={() => setActiveTab("settings")}
+                  className="text-xs text-[var(--accent)] hover:underline"
+                >
+                  Tune dashboard
+                </button>
+              </div>
+              <div className="space-y-3">
+                {storageDevices.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--muted)]">
+                    No physical drive metadata detected.
+                  </p>
+                ) : (
+                  storageDevices.map((device) => (
+                    <div key={`${device.name}-${device.interface}`} className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{device.name}</p>
+                        <p className="text-sm text-[var(--muted)]">
+                          {device.type} · {device.interface}
+                        </p>
+                      </div>
+                      <span className="text-sm text-[var(--foreground)]">
+                        {device.size ? formatBytes(device.size) : "Unknown"}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+          </CollapsibleSection>
+
+          <div className="mb-6" />
+          <CollapsibleSection
+            title="Live trends"
+            description="Two-minute CPU and memory history."
+            defaultOpen={!isMobileViewport}
+            open={isMobileViewport ? overviewSections.trends : undefined}
+            onToggle={isMobileViewport ? () => toggleOverviewSection("trends") : undefined}
+          >
+          <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
               <h2 className="mb-3 text-sm font-semibold">CPU (last 2 min)</h2>
               <div className="h-32 min-h-[128px]">
@@ -765,51 +1682,173 @@ export default function Dashboard() {
                 </ResponsiveContainer>
               </div>
             </div>
-          </section>
+          </div>
+          </CollapsibleSection>
 
-          <section className="mb-6">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Processes (kill from here)</h2>
-              <div className="flex gap-2">
-                {(["cpu", "mem", "name"] as const).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setSortBy(s)}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                      sortBy === s
-                        ? "bg-[var(--accent)]/20 text-[var(--accent)]"
-                        : "text-[var(--muted)] hover:bg-[var(--border)] hover:text-[var(--foreground)]"
-                    }`}
+          <div className="mb-6" />
+          <CollapsibleSection
+            title="Resources and health"
+            description="Recent items, health checks, and app quick links."
+            defaultOpen
+            open={isMobileViewport ? overviewSections.resources : undefined}
+            onToggle={isMobileViewport ? () => toggleOverviewSection("resources") : undefined}
+          >
+          <div className="grid gap-6 xl:grid-cols-[1.15fr_1fr_0.9fr]">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Recent sites and containers</h2>
+                <button
+                  onClick={() => setActiveTab("websites")}
+                  className="text-xs text-[var(--accent)] hover:underline"
+                >
+                  Open details
+                </button>
+              </div>
+              <div className="space-y-3">
+                {recentItems.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--muted)]">
+                    No recent resources yet.
+                  </p>
+                ) : (
+                  recentItems.map((item) => (
+                    <div
+                      key={`${item.status}-${item.name}`}
+                      className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{item.name}</p>
+                        <p className="truncate text-sm text-[var(--muted)]">{item.meta}</p>
+                      </div>
+                      <span className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)]">
+                        {item.status}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Health checklist</h2>
+                <button
+                  onClick={() => setActiveTab("server")}
+                  className="text-xs text-[var(--accent)] hover:underline"
+                >
+                  Open system tools
+                </button>
+              </div>
+              <div className="space-y-3">
+                {healthChecks.map((item) => (
+                  <div
+                    key={item.label}
+                    className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3"
                   >
-                    Sort by {s}
-                  </button>
+                    <div>
+                      <p className="font-medium">{item.label}</p>
+                      <p className="text-sm text-[var(--muted)]">{item.detail}</p>
+                    </div>
+                    <span
+                      className={cx(
+                        "rounded-full px-2.5 py-1 text-xs",
+                        item.healthy
+                          ? "bg-emerald-500/15 text-emerald-300"
+                          : "bg-amber-500/15 text-amber-300"
+                      )}
+                    >
+                      {item.healthy ? "Ready" : "Check"}
+                    </span>
+                  </div>
                 ))}
               </div>
             </div>
-            <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
-              <div className="max-h-64 overflow-y-auto">
+
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Quick links</h2>
+                <button
+                  onClick={() => setActiveTab("apps")}
+                  className="text-xs text-[var(--accent)] hover:underline"
+                >
+                  View all apps
+                </button>
+              </div>
+              <div className="space-y-3">
+                {apps.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--muted)]">
+                    No detected apps.
+                  </p>
+                ) : (
+                  apps.slice(0, 6).map((app) => (
+                    <a
+                      key={`${app.port}-${app.name}`}
+                      href={app.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3 transition hover:bg-[var(--border)]/40"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{app.name}</p>
+                        <p className="text-sm text-[var(--muted)]">{app.process || "Unknown process"}</p>
+                      </div>
+                      <span className="font-mono text-xs text-[var(--muted)]">:{app.port}</span>
+                    </a>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+          </CollapsibleSection>
+
+          <div className="mb-6" />
+          <CollapsibleSection
+            title="Processes and ports"
+            description="Live process activity and listening ports."
+            defaultOpen={!isMobileViewport}
+            open={isMobileViewport ? overviewSections.processes : undefined}
+            onToggle={isMobileViewport ? () => toggleOverviewSection("processes") : undefined}
+          >
+          <div className="grid gap-6 lg:grid-cols-2">
+            {showProcessTable ? (
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Processes</h2>
+                <div className="flex gap-2">
+                  {(["cpu", "mem", "name"] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setSortBy(s)}
+                      className={cx(
+                        "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                        sortBy === s
+                          ? "bg-[var(--accent)]/20 text-[var(--accent)]"
+                          : "text-[var(--muted)] hover:bg-[var(--border)] hover:text-[var(--foreground)]"
+                      )}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="max-h-72 overflow-y-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="sticky top-0 z-10 bg-[var(--card)] text-[var(--muted)]">
                     <tr>
                       <th className="px-4 py-3 font-medium">Process</th>
                       <th className="px-4 py-3 font-medium">PID</th>
-                      <th className="px-4 py-3 font-medium">User</th>
-                      <th className="px-4 py-3 font-medium text-right">CPU %</th>
-                      <th className="px-4 py-3 font-medium text-right">Mem (MB)</th>
+                      <th className="px-4 py-3 font-medium text-right">CPU</th>
                       <th className="px-4 py-3 font-medium w-20"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {processes.map((p) => (
-                      <tr
-                        key={p.pid}
-                        className="border-t border-[var(--border)] hover:bg-[var(--border)]/50"
-                      >
-                        <td className="px-4 py-2 font-mono">{p.name}</td>
+                    {processes.slice(0, 12).map((p) => (
+                      <tr key={p.pid} className="border-t border-[var(--border)] hover:bg-[var(--border)]/50">
+                        <td className="px-4 py-2">
+                          <p className="font-mono">{p.name}</p>
+                          <p className="text-xs text-[var(--muted)]">{p.user}</p>
+                        </td>
                         <td className="px-4 py-2 text-[var(--muted)]">{p.pid}</td>
-                        <td className="px-4 py-2 text-[var(--muted)]">{p.user}</td>
-                        <td className="px-4 py-2 text-right font-mono">{p.cpu ?? 0}</td>
-                        <td className="px-4 py-2 text-right font-mono">{p.mem ?? 0}</td>
+                        <td className="px-4 py-2 text-right font-mono">{p.cpu ?? 0}%</td>
                         <td className="px-4 py-2">
                           <button
                             onClick={() => killProcess(p.pid)}
@@ -825,9 +1864,22 @@ export default function Dashboard() {
                 </table>
               </div>
             </div>
-          </section>
+            ) : (
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+              <h2 className="text-base font-semibold">Processes</h2>
+              <p className="mt-3 text-sm text-[var(--muted)]">
+                Process table is hidden in dashboard settings. Re-enable it in the
+                settings page if you want live process visibility here.
+              </p>
+              <button
+                onClick={() => setActiveTab("settings")}
+                className="mt-4 rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50"
+              >
+                Open Settings
+              </button>
+            </div>
+            )}
 
-          <section className="grid gap-6 lg:grid-cols-2">
             <div>
               <h2 className="mb-3 text-sm font-semibold">Listening ports</h2>
               <div className="max-h-64 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)]">
@@ -883,7 +1935,8 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
-          </section>
+          </div>
+          </CollapsibleSection>
         </>
       )}
 
@@ -1010,47 +2063,129 @@ export default function Dashboard() {
         <section className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <h2 className="mb-4 text-lg font-semibold">Host websites</h2>
-            <div className="mb-6 rounded-xl border border-[var(--border)] bg-[var(--card)] p-6">
-              <h3 className="mb-3 font-medium">Create new site</h3>
-              <div className="flex flex-wrap gap-3">
-                <input
-                  type="text"
-                  value={newDomain}
-                  onChange={(e) => setNewDomain(e.target.value)}
-                  placeholder="example.com"
-                  className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2 font-mono text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
-                />
-                <select
-                  value={newWebserver}
-                  onChange={(e) => setNewWebserver(e.target.value as "nginx" | "ols")}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2 text-[var(--foreground)]"
-                >
-                  <option value="nginx">nginx</option>
-                  <option value="ols">OpenLiteSpeed</option>
-                </select>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={newWordpress} onChange={(e) => setNewWordpress(e.target.checked)} className="rounded" />
-                  WordPress (Docker)
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={newCreateDnsZone} onChange={(e) => setNewCreateDnsZone(e.target.checked)} className="rounded" />
-                  Create DNS zone
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={newCreateSsl} onChange={(e) => setNewCreateSsl(e.target.checked)} className="rounded" />
-                  Issue SSL
-                </label>
-                <button
-                  onClick={createWebsite}
-                  disabled={creatingSite || !newDomain.trim()}
-                  className="rounded-lg bg-[var(--accent)]/20 px-4 py-2 font-medium text-[var(--accent)] hover:bg-[var(--accent)]/30 disabled:opacity-50"
-                >
-                  {creatingSite ? "Creating…" : "Create"}
-                </button>
+            <div className="mb-6 grid gap-5 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 xl:grid-cols-[1.3fr_0.75fr]">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent)]">
+                  Create new site
+                </p>
+                <h3 className="mt-2 text-xl font-semibold">Guided website setup</h3>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                  This flow was reshaped from the Stitch design to keep the first deploy simple:
+                  choose a domain, pick the web stack, then optionally add DNS and SSL.
+                </p>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Domain</span>
+                    <input
+                      type="text"
+                      value={newDomain}
+                      onChange={(e) => setNewDomain(e.target.value)}
+                      placeholder="example.com"
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 font-mono text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Web server</span>
+                    <select
+                      value={newWebserver}
+                      onChange={(e) => setNewWebserver(e.target.value as "nginx" | "ols")}
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-[var(--foreground)]"
+                    >
+                      <option value="nginx">nginx</option>
+                      <option value="ols">OpenLiteSpeed</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <label className="rounded-xl border border-[var(--border)] p-4 text-sm">
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={newWordpress}
+                        onChange={(e) => setNewWordpress(e.target.checked)}
+                        className="mt-1 rounded"
+                      />
+                      <div>
+                        <p className="font-medium">WordPress in Docker</p>
+                        <p className="mt-1 text-[var(--muted)]">
+                          Use a containerized WordPress stack instead of a static placeholder site.
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+
+                  <label className="rounded-xl border border-[var(--border)] p-4 text-sm">
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={newCreateDnsZone}
+                        onChange={(e) => setNewCreateDnsZone(e.target.checked)}
+                        className="mt-1 rounded"
+                      />
+                      <div>
+                        <p className="font-medium">Create DNS zone</p>
+                        <p className="mt-1 text-[var(--muted)]">
+                          Add a bind9 zone here if the panel is also handling DNS for the domain.
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+
+                  <label className="rounded-xl border border-[var(--border)] p-4 text-sm md:col-span-2">
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={newCreateSsl}
+                        onChange={(e) => setNewCreateSsl(e.target.checked)}
+                        className="mt-1 rounded"
+                      />
+                      <div>
+                        <p className="font-medium">Issue SSL certificate</p>
+                        <p className="mt-1 text-[var(--muted)]">
+                          Use certbot during creation if DNS is already pointed at this server.
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="mt-5 rounded-xl border border-[var(--border)] bg-black/10 p-4 text-sm text-[var(--muted)]">
+                  Point the domain at this server before requesting SSL. For WordPress,
+                  Docker must be available. Static sites are scaffolded under `/var/www`.
+                </div>
+
+                <div className="mt-5">
+                  <button
+                    onClick={createWebsite}
+                    disabled={creatingSite || !newDomain.trim()}
+                    className="rounded-xl bg-[var(--accent)] px-5 py-3 font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+                  >
+                    {creatingSite ? "Creating…" : "Create Site"}
+                  </button>
+                </div>
               </div>
-              <p className="mt-2 text-xs text-[var(--muted)]">
-                Integrated flow: optionally create DNS zone (bind9) and issue Let&apos;s Encrypt SSL. Point domain DNS to server first.
-              </p>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-black/10 p-5">
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                  Summary
+                </p>
+                <h4 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                  What this will create
+                </h4>
+                <div className="mt-4 space-y-3">
+                  {createSiteSummary.map((line) => (
+                    <div
+                      key={line}
+                      className="rounded-xl border border-[var(--border)] px-3 py-3 text-sm text-[var(--muted)]"
+                    >
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
             <h3 className="mb-3 font-medium">Existing sites</h3>
             <div className="rounded-xl border border-[var(--border)] bg-[var(--card)]">
@@ -1510,6 +2645,62 @@ export default function Dashboard() {
         </section>
       )}
 
+      {activeTab === "actions" && (
+        <section>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Safe Actions</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Run approved operational commands from the panel without exposing an unrestricted shell.
+              </p>
+            </div>
+            <button
+              onClick={fetchSafeActions}
+              className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50"
+            >
+              Refresh catalog
+            </button>
+          </div>
+
+          <div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {safeActions.map((action) => (
+              <div
+                key={action.id}
+                className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5"
+              >
+                <h3 className="text-base font-semibold">{action.label}</h3>
+                <p className="mt-2 text-sm text-[var(--muted)]">{action.description}</p>
+                <button
+                  onClick={() => runSafeAction(action)}
+                  disabled={actionRunning !== null}
+                  className="mt-4 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+                >
+                  {actionRunning === action.id ? "Running…" : "Run"}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-base font-semibold">
+                {actionOutput?.label || "Command output"}
+              </h3>
+              <button
+                onClick={() => setActionOutput(null)}
+                className="text-xs text-[var(--muted)] hover:underline"
+              >
+                Clear
+              </button>
+            </div>
+            <pre className="min-h-[360px] overflow-auto rounded-xl border border-[var(--border)] bg-[var(--background)] p-4 text-xs text-[var(--foreground)]">
+              {actionOutput?.output ||
+                "Select an approved action to inspect live operational output here."}
+            </pre>
+          </div>
+        </section>
+      )}
+
       {activeTab === "installs" && (
         <section>
           <h2 className="mb-4 text-lg font-semibold">One-Click Installs</h2>
@@ -1562,6 +2753,73 @@ export default function Dashboard() {
                   );
                 })}
               </>
+            )}
+          </div>
+        </section>
+      )}
+
+      {activeTab === "audit" && (
+        <section>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Audit Trail</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Review recent administrative activity and privileged operations executed from the panel.
+              </p>
+            </div>
+            <button
+              onClick={fetchAuditEntries}
+              className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50"
+            >
+              Refresh audit log
+            </button>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            {auditEntries.length === 0 ? (
+              <p className="px-6 py-10 text-center text-sm text-[var(--muted)]">
+                No audit events recorded yet.
+              </p>
+            ) : (
+              <div className="divide-y divide-[var(--border)]">
+                {auditEntries.map((entry, index) => (
+                  <div
+                    key={`${entry.timestamp}-${entry.action}-${index}`}
+                    className="flex flex-col gap-3 px-5 py-4 md:flex-row md:items-start md:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium">{entry.action}</p>
+                        <span
+                          className={cx(
+                            "rounded-full px-2.5 py-1 text-xs",
+                            entry.outcome === "success"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-red-500/15 text-red-300"
+                          )}
+                        >
+                          {entry.outcome}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm text-[var(--muted)]">
+                        {new Date(entry.timestamp).toLocaleString()} by {entry.actor}
+                      </p>
+                      {entry.details && Object.keys(entry.details).length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {Object.entries(entry.details).map(([key, value]) => (
+                            <span
+                              key={key}
+                              className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)]"
+                            >
+                              {key}: {String(value)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </section>
@@ -1701,6 +2959,579 @@ export default function Dashboard() {
         </section>
       )}
 
+      {activeTab === "integrations" && (
+        <section>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Integrations</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Register self-hosted apps like Immich, Nextcloud, Grafana, and any custom service.
+                The panel checks their health live on refresh.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchIntegrations}
+                className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50"
+              >
+                Refresh
+              </button>
+              <button
+                onClick={() => saveIntegrations(integrations)}
+                disabled={integrationsSaving}
+                className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+              >
+                {integrationsSaving ? "Saving…" : "Save Integrations"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              label="Enabled"
+              value={`${enabledIntegrations.length}`}
+              meta={`${integrations.length} integration profiles`}
+              toneClass="text-[var(--accent)]"
+            />
+            <MetricCard
+              label="Healthy"
+              value={`${integrations.filter((item) => item.status === "healthy").length}`}
+              meta="Services responding to health checks"
+              toneClass="text-emerald-400"
+            />
+            <MetricCard
+              label="Offline"
+              value={`${integrations.filter((item) => item.enabled && item.status === "offline").length}`}
+              meta="Enabled services not responding"
+              toneClass="text-amber-400"
+            />
+            <MetricCard
+              label="Polling"
+              value={`${Math.round(livePollMs / 1000)}s`}
+              meta="Uses the dashboard live refresh interval"
+              toneClass="text-violet-400"
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+            {integrations.map((integration) => (
+              <div
+                key={integration.id}
+                className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--border)] bg-black/20 text-sm font-semibold text-[var(--accent)]">
+                      {integration.icon}
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">{integration.name}</h3>
+                      <p className="text-sm text-[var(--muted)]">{integration.description}</p>
+                    </div>
+                  </div>
+                  <span
+                    className={cx(
+                      "rounded-full px-2.5 py-1 text-xs",
+                      integration.status === "healthy"
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : integration.status === "offline"
+                          ? "bg-amber-500/15 text-amber-300"
+                          : "bg-[var(--border)] text-[var(--muted)]"
+                    )}
+                  >
+                    {integration.status}
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  <label className="flex items-center justify-between rounded-xl border border-[var(--border)] px-3 py-3 text-sm">
+                    <span>Enable integration</span>
+                    <input
+                      type="checkbox"
+                      checked={integration.enabled}
+                      onChange={(e) => updateIntegration(integration.id, "enabled", e.target.checked)}
+                      className="rounded"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-2 block text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                      App URL
+                    </span>
+                    <input
+                      value={integration.url}
+                      onChange={(e) => updateIntegration(integration.id, "url", e.target.value)}
+                      placeholder="http://localhost:3000"
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                    />
+                  </label>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-2 block text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                        Health URL
+                      </span>
+                      <input
+                        value={integration.healthUrl}
+                        onChange={(e) => updateIntegration(integration.id, "healthUrl", e.target.value)}
+                        placeholder="http://localhost:3000/health"
+                        className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                        Port
+                      </span>
+                      <input
+                        value={integration.port}
+                        onChange={(e) => updateIntegration(integration.id, "port", e.target.value)}
+                        placeholder="3000"
+                        className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <span className="text-xs text-[var(--muted)]">
+                    Category: {integration.category}
+                  </span>
+                  {integration.url ? (
+                    <a
+                      href={integration.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-[var(--accent)] hover:underline"
+                    >
+                      Open app
+                    </a>
+                  ) : (
+                    <span className="text-xs text-[var(--muted)]">Add a URL to open it</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {activeTab === "settings" && panelSettings && (
+        <section>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Settings</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Tune live refresh, dashboard density, server defaults, and security preferences
+                without editing files by hand.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchSettings}
+                className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50"
+              >
+                Reload
+              </button>
+              <button
+                onClick={saveSettings}
+                disabled={settingsSaving}
+                className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+              >
+                {settingsSaving ? "Saving…" : "Save Settings"}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <h3 className="text-base font-semibold">Dashboard Preferences</h3>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Polling interval</span>
+                    <select
+                      value={panelSettings.dashboard.pollingIntervalMs}
+                      onChange={(e) =>
+                        setPanelSettings((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                dashboard: {
+                                  ...prev.dashboard,
+                                  pollingIntervalMs: Number(e.target.value),
+                                },
+                              }
+                            : prev
+                        )
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    >
+                      <option value={2000}>2 seconds</option>
+                      <option value={3000}>3 seconds</option>
+                      <option value={5000}>5 seconds</option>
+                      <option value={10000}>10 seconds</option>
+                      <option value={15000}>15 seconds</option>
+                    </select>
+                  </label>
+                  <div className="rounded-xl border border-[var(--border)] bg-black/10 px-4 py-3">
+                    <p className="text-sm font-medium">Current behavior</p>
+                    <p className="mt-2 text-sm text-[var(--muted)]">
+                      Live metrics update every {Math.round(panelSettings.dashboard.pollingIntervalMs / 1000)}s.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {[
+                    {
+                      label: "Show GPU metrics",
+                      field: "showGpu" as const,
+                      description: "Display GPU card and telemetry when hardware data is available.",
+                    },
+                    {
+                      label: "Show process table",
+                      field: "showProcessTable" as const,
+                      description: "Keep the live process list visible on the overview page.",
+                    },
+                    {
+                      label: "Compact mode",
+                      field: "compactMode" as const,
+                      description: "Tighten spacing across the dashboard for denser monitoring.",
+                    },
+                  ].map((item) => (
+                    <label
+                      key={item.field}
+                      className="flex items-start justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3"
+                    >
+                      <div>
+                        <p className="font-medium">{item.label}</p>
+                        <p className="mt-1 text-sm text-[var(--muted)]">{item.description}</p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={panelSettings.dashboard[item.field]}
+                        onChange={(e) =>
+                          setPanelSettings((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  dashboard: {
+                                    ...prev.dashboard,
+                                    [item.field]: e.target.checked,
+                                  },
+                                }
+                              : prev
+                          )
+                        }
+                        className="mt-1 rounded"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <h3 className="text-base font-semibold">Server Defaults</h3>
+                <div className="mt-4 grid gap-4">
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Default web server</span>
+                    <select
+                      value={panelSettings.defaults.webserver}
+                      onChange={(e) =>
+                        setPanelSettings((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                defaults: {
+                                  ...prev.defaults,
+                                  webserver: e.target.value === "ols" ? "ols" : "nginx",
+                                },
+                              }
+                            : prev
+                        )
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    >
+                      <option value="nginx">nginx</option>
+                      <option value="ols">OpenLiteSpeed</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Backup directory label</span>
+                    <input
+                      value={panelSettings.defaults.backupDirectoryLabel}
+                      onChange={(e) =>
+                        setPanelSettings((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                defaults: {
+                                  ...prev.defaults,
+                                  backupDirectoryLabel: e.target.value,
+                                },
+                              }
+                            : prev
+                        )
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">File manager root label</span>
+                    <input
+                      value={panelSettings.defaults.fileManagerRootLabel}
+                      onChange={(e) =>
+                        setPanelSettings((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                defaults: {
+                                  ...prev.defaults,
+                                  fileManagerRootLabel: e.target.value,
+                                },
+                              }
+                            : prev
+                        )
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <h3 className="text-base font-semibold">Security Preferences</h3>
+                <div className="mt-4 grid gap-4">
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">SSH port</span>
+                    <input
+                      value={panelSettings.security.sshPort}
+                      onChange={(e) =>
+                        setPanelSettings((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                security: {
+                                  ...prev.security,
+                                  sshPort: e.target.value,
+                                },
+                              }
+                            : prev
+                        )
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+
+                  {[
+                    {
+                      label: "Fail2Ban enabled",
+                      field: "fail2banEnabled" as const,
+                      description: "Track whether brute-force protection is part of your server baseline.",
+                    },
+                  ].map((item) => (
+                    <label
+                      key={item.field}
+                      className="flex items-start justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3"
+                    >
+                      <div>
+                        <p className="font-medium">{item.label}</p>
+                        <p className="mt-1 text-sm text-[var(--muted)]">{item.description}</p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={panelSettings.security[item.field]}
+                        onChange={(e) =>
+                          setPanelSettings((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  security: {
+                                    ...prev.security,
+                                    [item.field]: e.target.checked,
+                                  },
+                                }
+                              : prev
+                          )
+                        }
+                        className="mt-1 rounded"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <h3 className="text-base font-semibold">Authenticator 2FA</h3>
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Use Microsoft Authenticator or any TOTP-compatible app for a second login factor.
+                </p>
+
+                <div className="mt-4 rounded-xl border border-[var(--border)] px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium">Current status</p>
+                      <p className="text-sm text-[var(--muted)]">
+                        {twoFactorState?.enabled ? "Enabled" : twoFactorState?.setupPending ? "Setup pending" : "Disabled"}
+                      </p>
+                    </div>
+                    <span
+                      className={cx(
+                        "rounded-full px-2.5 py-1 text-xs",
+                        twoFactorState?.enabled
+                          ? "bg-emerald-500/15 text-emerald-300"
+                          : twoFactorState?.setupPending
+                            ? "bg-amber-500/15 text-amber-300"
+                            : "bg-[var(--border)] text-[var(--muted)]"
+                      )}
+                    >
+                      {twoFactorState?.enabled ? "Protected" : twoFactorState?.setupPending ? "Pending" : "Inactive"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Issuer</span>
+                    <input
+                      value={twoFactorForm.issuer}
+                      onChange={(e) =>
+                        setTwoFactorForm((prev) => ({ ...prev, issuer: e.target.value }))
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Account label</span>
+                    <input
+                      value={twoFactorForm.label}
+                      onChange={(e) =>
+                        setTwoFactorForm((prev) => ({ ...prev, label: e.target.value }))
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Current password</span>
+                    <input
+                      type="password"
+                      value={twoFactorForm.password}
+                      onChange={(e) =>
+                        setTwoFactorForm((prev) => ({ ...prev, password: e.target.value }))
+                      }
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-[var(--muted)]">Authenticator code</span>
+                    <input
+                      value={twoFactorForm.code}
+                      inputMode="numeric"
+                      onChange={(e) =>
+                        setTwoFactorForm((prev) => ({
+                          ...prev,
+                          code: e.target.value.replace(/\D/g, "").slice(0, 6),
+                        }))
+                      }
+                      placeholder="6-digit code"
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm"
+                    />
+                  </label>
+                </div>
+
+                {twoFactorSetupSecret && (
+                  <div className="mt-4 rounded-xl border border-[var(--border)] bg-black/10 p-4">
+                    <p className="text-sm font-medium">Setup secret</p>
+                    <p className="mt-2 break-all font-mono text-sm text-[var(--accent)]">
+                      {twoFactorSetupSecret}
+                    </p>
+                    <p className="mt-3 text-xs text-[var(--muted)]">
+                      Microsoft Authenticator supports manual TOTP entry. Add a new account, choose
+                      to enter a setup key, and use the secret above.
+                    </p>
+                    {twoFactorOtpAuthUri && (
+                      <p className="mt-3 break-all text-xs text-[var(--muted)]">
+                        otpauth URI: {twoFactorOtpAuthUri}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    onClick={startTwoFactorSetup}
+                    disabled={twoFactorLoading || twoFactorState?.enabled === true}
+                    className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+                  >
+                    {twoFactorLoading ? "Working…" : "Start 2FA setup"}
+                  </button>
+                  <button
+                    onClick={confirmTwoFactorSetup}
+                    disabled={twoFactorLoading || !twoFactorState?.setupPending}
+                    className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50 disabled:opacity-50"
+                  >
+                    Confirm setup
+                  </button>
+                  <button
+                    onClick={disableTwoFactor}
+                    disabled={twoFactorLoading || !twoFactorState?.enabled}
+                    className="rounded-xl border border-red-500/30 px-4 py-2 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                  >
+                    Disable 2FA
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <h3 className="text-base font-semibold">Connected App Surface</h3>
+                <div className="mt-4 space-y-3">
+                  {enabledIntegrations.length === 0 ? (
+                    <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--muted)]">
+                      No integrations enabled yet. Add Immich, Nextcloud, Grafana, Portainer, or a custom app in the integrations tab.
+                    </p>
+                  ) : (
+                    enabledIntegrations.map((integration) => (
+                      <div
+                        key={integration.id}
+                        className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] px-4 py-3"
+                      >
+                        <div>
+                          <p className="font-medium">{integration.name}</p>
+                          <p className="text-sm text-[var(--muted)]">
+                            {integration.url || "No URL configured"}
+                          </p>
+                        </div>
+                        <span
+                          className={cx(
+                            "rounded-full px-2.5 py-1 text-xs",
+                            integration.status === "healthy"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-amber-500/15 text-amber-300"
+                          )}
+                        >
+                          {integration.status}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <button
+                  onClick={() => setActiveTab("integrations")}
+                  className="mt-4 rounded-xl border border-[var(--border)] px-4 py-2 text-sm hover:bg-[var(--border)]/50"
+                >
+                  Open Integrations
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {activeTab === "notes" && (
         <section>
           <h2 className="mb-4 text-lg font-semibold">Services Notes</h2>
@@ -1757,7 +3588,8 @@ export default function Dashboard() {
           />
         </section>
       )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

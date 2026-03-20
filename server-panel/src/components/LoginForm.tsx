@@ -4,6 +4,7 @@ import { useState } from "react";
 
 export default function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   const [password, setPassword] = useState("");
+  const [twoFactorCode, setTwoFactorCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -15,7 +16,7 @@ export default function LoginForm({ onSuccess }: { onSuccess: () => void }) {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, twoFactorCode }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -51,6 +52,21 @@ export default function LoginForm({ onSuccess }: { onSuccess: () => void }) {
           autoFocus
           required
         />
+        <label className="mb-2 block text-sm font-medium text-[var(--muted)]">
+          Authenticator code
+        </label>
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          value={twoFactorCode}
+          onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          className="mb-2 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2 text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+          placeholder="6-digit code if enabled"
+        />
+        <p className="mb-4 text-xs text-[var(--muted)]">
+          Use the current code from Microsoft Authenticator or any TOTP-compatible app if 2FA is enabled.
+        </p>
         {error && (
           <p className="mb-4 text-sm text-red-400">{error}</p>
         )}

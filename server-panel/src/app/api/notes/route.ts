@@ -1,19 +1,23 @@
 import { NextResponse } from "next/server";
-import { readFile, writeFile, mkdir } from "fs/promises";
+import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { requireAuth } from "@/lib/auth";
+import { recordAuditEvent } from "@/lib/audit";
+import { getPanelDataDir } from "@/lib/panel-data";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const NOTES_DIR = process.env.PANEL_DATA_DIR || process.env.BACKUP_DIR || "/var/backups/panel";
-const NOTES_FILE = join(NOTES_DIR, "services-notes.txt");
+async function getNotesFile() {
+  return join(await getPanelDataDir(), "services-notes.txt");
+}
 
 export async function GET() {
   const { authorized } = await requireAuth();
   if (!authorized)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const NOTES_FILE = await getNotesFile();
   try {
     const content = await readFile(NOTES_FILE, "utf-8");
     return NextResponse.json({ content, path: NOTES_FILE });
@@ -36,11 +40,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
+    const NOTES_FILE = await getNotesFile();
     const body = await request.json().catch(() => ({}));
     const content = typeof body.content === "string" ? body.content : "";
 
-    await mkdir(NOTES_DIR, { recursive: true });
     await writeFile(NOTES_FILE, content, "utf-8");
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "notes.update",
+      actor: "admin",
+      outcome: "success",
+      details: { characters: content.length },
+    });
 
     return NextResponse.json({ ok: true, message: "Saved" });
   } catch (err) {

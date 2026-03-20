@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
+import { isAuthConfigured } from "@/lib/auth-config";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const configured = isAuthConfigured();
+
   return NextResponse.json({
-    configured: !!(process.env.PANEL_PASSWORD || process.env.PANEL_PASSWORD_HASH),
-    hasPassword: !!process.env.PANEL_PASSWORD,
-    hasHash: !!process.env.PANEL_PASSWORD_HASH,
+    configured,
+    setupRequired: !configured,
   });
 }

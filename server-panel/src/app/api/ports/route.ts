@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import si from "systeminformation";
+import { requireAuth } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
+  const { authorized } = await requireAuth();
+  if (!authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const connections = await si.networkConnections();
 

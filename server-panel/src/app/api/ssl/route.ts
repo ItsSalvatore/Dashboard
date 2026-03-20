@@ -9,6 +9,11 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
+  const { authorized } = await requireAuth();
+  if (!authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { stdout } = await execAsync("certbot certificates 2>/dev/null || true");
     const certs: { domain: string; expiry: string }[] = [];

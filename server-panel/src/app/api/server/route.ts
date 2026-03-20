@@ -1,19 +1,25 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { requireAuth } from "@/lib/auth";
-
-const execAsync = promisify(exec);
+import { recordAuditEvent } from "@/lib/audit";
+import { runCommand, runFirstSuccessful } from "@/lib/commands";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
+  const { authorized } = await requireAuth();
+  if (!authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const [hostname, uptime, kernel] = await Promise.all([
-      execAsync("hostname").then((r) => r.stdout.trim()),
-      execAsync("uptime -p 2>/dev/null || uptime").then((r) => r.stdout.trim()),
-      execAsync("uname -r").then((r) => r.stdout.trim()),
+      runCommand("hostname").then((r) => r.stdout.trim()),
+      runFirstSuccessful([
+        { command: "uptime", args: ["-p"] },
+        { command: "uptime" },
+      ]).then((r) => r.stdout.trim()),
+      runCommand("uname", ["-r"]).then((r) => r.stdout.trim()),
     ]);
 
     return NextResponse.json({
@@ -38,18 +44,44 @@ export async function POST(request: Request) {
     const action = body.action;
 
     if (action === "reload-nginx") {
-      await execAsync("nginx -t && systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null");
+      await runCommand("nginx", ["-t"]);
+      await runFirstSuccessful([
+        { command: "systemctl", args: ["reload", "nginx"] },
+        { command: "service", args: ["nginx", "reload"] },
+      ]);
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "server.reload-nginx",
+        actor: "admin",
+        outcome: "success",
+      });
       return NextResponse.json({ ok: true, message: "nginx reloaded" });
     }
 
     if (action === "restart-nginx") {
-      await execAsync("systemctl restart nginx 2>/dev/null || service nginx restart 2>/dev/null");
+      await runFirstSuccessful([
+        { command: "systemctl", args: ["restart", "nginx"] },
+        { command: "service", args: ["nginx", "restart"] },
+      ]);
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "server.restart-nginx",
+        actor: "admin",
+        outcome: "success",
+      });
       return NextResponse.json({ ok: true, message: "nginx restarted" });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (error: unknown) {
     const err = error as { stderr?: string };
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "server.action",
+      actor: "admin",
+      outcome: "failure",
+      details: { error: err.stderr ?? "Command failed" },
+    });
     return NextResponse.json(
       { error: err.stderr ?? "Command failed" },
       { status: 500 }
