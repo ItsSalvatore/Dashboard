@@ -110,7 +110,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const integrations = Array.isArray(body.integrations) ? body.integrations : [];
+    const integrations: unknown[] = Array.isArray(body.integrations) ? body.integrations : [];
     const fallbackMap = new Map(DEFAULT_INTEGRATIONS.map((item) => [item.id, item]));
     const normalized = integrations.map((item) =>
       normalizeIntegration(item, fallbackMap.get((item as { id?: string })?.id || "") || DEFAULT_INTEGRATIONS[4])
