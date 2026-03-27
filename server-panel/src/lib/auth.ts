@@ -24,8 +24,9 @@ export async function verifyPassword(password: string): Promise<boolean> {
 }
 
 function sign(payload: string): string {
-  const sig = createHmac("sha256", getAuthSecret()).update(payload).digest("hex");
-  return `${Buffer.from(payload).toString("base64url")}.${sig}`;
+  const raw = Buffer.from(payload).toString("base64url");
+  const sig = createHmac("sha256", getAuthSecret()).update(raw).digest("hex");
+  return `${raw}.${sig}`;
 }
 
 function verify(token: string): { valid: boolean; payload?: { user: string; exp: number } } {
