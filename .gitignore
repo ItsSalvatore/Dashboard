@@ -19,6 +19,7 @@
 
 # production
 /build
+/cyberpanel
 
 # misc
 .DS_Store
