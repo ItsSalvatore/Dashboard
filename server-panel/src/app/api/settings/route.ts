@@ -13,9 +13,9 @@ export const revalidate = 0;
 
 function normalizeSettings(input: unknown): PanelSettings {
   const source = (input ?? {}) as Partial<PanelSettings>;
-  const dashboard = source.dashboard ?? {};
-  const defaults = source.defaults ?? {};
-  const security = source.security ?? {};
+  const dashboard: Partial<PanelSettings["dashboard"]> = source.dashboard ?? {};
+  const defaults: Partial<PanelSettings["defaults"]> = source.defaults ?? {};
+  const security: Partial<PanelSettings["security"]> = source.security ?? {};
 
   const pollingIntervalMs =
     typeof dashboard.pollingIntervalMs === "number"
