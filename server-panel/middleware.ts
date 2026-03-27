@@ -12,7 +12,7 @@ function decodeBase64Url(value: string): string {
   return atob(padded);
 }
 
-function hexToBytes(value: string): Uint8Array | null {
+function hexToBytes(value: string): ArrayBuffer | null {
   if (value.length % 2 !== 0 || /[^0-9a-f]/i.test(value)) {
     return null;
   }
@@ -22,7 +22,7 @@ function hexToBytes(value: string): Uint8Array | null {
     bytes[i / 2] = parseInt(value.slice(i, i + 2), 16);
   }
 
-  return bytes;
+  return bytes.buffer;
 }
 
 async function verifySessionToken(token: string): Promise<boolean> {
