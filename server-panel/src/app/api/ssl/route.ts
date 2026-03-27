@@ -52,10 +52,13 @@ export async function POST(request: Request) {
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   let actionName = "unknown";
   try {
-    const body = await request.json().catch(() => ({}));
-    const action = body.action;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const action = typeof body.action === "string" ? body.action : "";
     actionName = typeof action === "string" ? action : "unknown";
-    const domain = (body.domain || "").trim().toLowerCase().replace(/[^a-z0-9.-]/g, "");
+    const domain = (typeof body.domain === "string" ? body.domain : "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]/g, "");
 
     if (action === "renew") {
       const { stdout, stderr } = await runCommand("certbot", ["renew", "--non-interactive"]);

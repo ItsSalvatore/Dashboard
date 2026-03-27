@@ -55,12 +55,12 @@ export async function POST(request: Request) {
   const { authorized } = await requireAuth();
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const body = await request.json();
-    const domain = sanitizeDomain(body?.domain ?? "");
-    const wordpress = !!body?.wordpress;
-    const webserver = body?.webserver === "ols" ? "ols" : "nginx";
-    const createDnsZone = !!body?.createDnsZone;
-    const issueSsl = !!body?.issueSsl;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const domain = sanitizeDomain(typeof body.domain === "string" ? body.domain : "");
+    const wordpress = body.wordpress === true;
+    const webserver = body.webserver === "ols" ? "ols" : "nginx";
+    const createDnsZone = body.createDnsZone === true;
+    const issueSsl = body.issueSsl === true;
 
     if (!isValidDomain(domain)) {
       return NextResponse.json(

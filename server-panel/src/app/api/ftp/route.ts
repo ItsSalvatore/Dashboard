@@ -47,13 +47,16 @@ export async function POST(request: Request) {
   const { authorized } = await requireAuth();
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await request.json().catch(() => ({}));
-  const action = body.action;
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const action = typeof body.action === "string" ? body.action : "";
 
   if (action === "create-user") {
     const username = String(body.username ?? "").replace(/[^a-z0-9_-]/gi, "");
-    const password = body.password;
-    const home = body.home ? String(body.home).replace(/\.\./g, "") : `/home/${username}`;
+    const password = typeof body.password === "string" ? body.password : "";
+    const home =
+      typeof body.home === "string" && body.home
+        ? body.home.replace(/\.\./g, "")
+        : `/home/${username}`;
 
     if (!username || username.length < 2 || username.length > 32) {
       return NextResponse.json({ error: "Invalid username" }, { status: 400 });

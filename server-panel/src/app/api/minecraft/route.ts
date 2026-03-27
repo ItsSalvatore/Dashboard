@@ -154,8 +154,11 @@ export async function POST(request: Request) {
 
   let action: string;
   try {
-    const body = await request.json().catch(() => ({}));
-    action = body.action || new URL(request.url).searchParams.get("action") || "";
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    action =
+      (typeof body.action === "string" ? body.action : "") ||
+      new URL(request.url).searchParams.get("action") ||
+      "";
   } catch {
     action = "";
   }

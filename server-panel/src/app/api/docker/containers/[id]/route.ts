@@ -18,8 +18,8 @@ export async function POST(
     return NextResponse.json({ error: "Invalid container ID" }, { status: 400 });
   }
 
-  const body = await request.json().catch(() => ({}));
-  const action = body.action;
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const action = typeof body.action === "string" ? body.action : "";
 
   if (!["start", "stop", "restart"].includes(action)) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });

@@ -52,8 +52,8 @@ export async function POST(request: Request) {
   const { authorized } = await requireAuth();
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await request.json().catch(() => ({}));
-  const action = body.action;
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const action = typeof body.action === "string" ? body.action : "";
 
   if (action === "enable") {
     await runCommand("ufw", ["--force", "enable"]);
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, enabled: false });
   }
   if (action === "add") {
-    const rule = body.rule as string;
+    const rule = typeof body.rule === "string" ? body.rule : "";
     if (!rule || typeof rule !== "string" || rule.length > 200) {
       return NextResponse.json({ error: "Invalid rule" }, { status: 400 });
     }
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
   if (action === "delete") {
-    const num = body.number;
+    const num = typeof body.number === "number" ? body.number : null;
     if (typeof num !== "number" || num < 1) {
       return NextResponse.json({ error: "Invalid rule number" }, { status: 400 });
     }

@@ -43,9 +43,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const body = await request.json();
-    const password = body?.password;
-    const twoFactorCode = typeof body?.twoFactorCode === "string" ? body.twoFactorCode : "";
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const password = body.password;
+    const twoFactorCode = typeof body.twoFactorCode === "string" ? body.twoFactorCode : "";
     if (typeof password !== "string" || !password) {
       return NextResponse.json({ error: "Password required" }, { status: 400 });
     }

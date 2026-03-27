@@ -13,8 +13,8 @@ import AppCard from "./AppCard";
 import CommandPalette, { type CommandPaletteItem } from "./CommandPalette";
 
 type SystemData = {
-  cpu: { current: number; cores: number };
-  memory: { usedPercent: number; used: number; total: number };
+  cpu: { current: number; cores: number } | null;
+  memory: { usedPercent: number; used: number; total: number } | null;
   disk: { usedPercent: number; used: number; total: number; mount: string } | null;
   gpu: { model: string; vram: number; utilizationGpu: number | null } | null;
   os: { hostname: string; uptime: number; platform: string };
@@ -35,6 +35,8 @@ type SystemData = {
       size: number;
     }[];
   };
+  degraded?: boolean;
+  warnings?: string[];
 } | null;
 
 type Process = {
@@ -154,6 +156,8 @@ type OverviewSectionKey =
   | "storage"
   | "resources"
   | "processes";
+
+type ServiceCheckState = "loading" | "ready" | "attention";
 
 type DockerContainer = {
   id: string;
@@ -333,7 +337,7 @@ export default function Dashboard() {
   const [mcAction, setMcAction] = useState<string | null>(null);
   const [sslRenewing, setSslRenewing] = useState(false);
   const [dockerContainers, setDockerContainers] = useState<DockerContainer[]>([]);
-  const [dockerAvailable, setDockerAvailable] = useState(false);
+  const [dockerAvailable, setDockerAvailable] = useState<boolean | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>("all");
@@ -403,6 +407,9 @@ export default function Dashboard() {
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [processesLoaded, setProcessesLoaded] = useState(false);
+  const [portsLoaded, setPortsLoaded] = useState(false);
+  const [appsLoaded, setAppsLoaded] = useState(false);
   const [overviewSections, setOverviewSections] = useState<Record<OverviewSectionKey, boolean>>({
     metrics: true,
     actions: true,
@@ -418,15 +425,20 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("System fetch failed");
       const data = await res.json();
       setSystem(data);
+      setError((prev) => (prev === "Failed to load system stats" ? null : prev));
       const now = new Date().toLocaleTimeString("en-US", { hour12: false });
-      setCpuHistory((prev) =>
-        [...prev.slice(-59), { time: now, cpu: data.cpu.current }].slice(-60)
-      );
-      setMemHistory((prev) =>
-        [...prev.slice(-59), { time: now, mem: data.memory.usedPercent }].slice(-60)
-      );
-    } catch (e) {
-      setError("Failed to load system stats");
+      if (typeof data.cpu?.current === "number") {
+        setCpuHistory((prev) =>
+          [...prev.slice(-59), { time: now, cpu: data.cpu.current }].slice(-60)
+        );
+      }
+      if (typeof data.memory?.usedPercent === "number") {
+        setMemHistory((prev) =>
+          [...prev.slice(-59), { time: now, mem: data.memory.usedPercent }].slice(-60)
+        );
+      }
+    } catch {
+      setSystem(null);
     }
   }, []);
 
@@ -436,8 +448,11 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Processes fetch failed");
       const data = await res.json();
       setProcesses(data.processes);
+      setProcessesLoaded(true);
+      setError((prev) => (prev === "Failed to load processes" ? null : prev));
     } catch {
-      setError("Failed to load processes");
+      setProcesses([]);
+      setProcessesLoaded(true);
     }
   }, [sortBy]);
 
@@ -447,8 +462,11 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Ports fetch failed");
       const data = await res.json();
       setPorts(data.ports);
+      setPortsLoaded(true);
+      setError((prev) => (prev === "Failed to load ports" ? null : prev));
     } catch {
-      setError("Failed to load ports");
+      setPorts([]);
+      setPortsLoaded(true);
     }
   }, []);
 
@@ -463,8 +481,11 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Apps fetch failed");
       const data = await res.json();
       setApps(data.all);
+      setAppsLoaded(true);
+      setError((prev) => (prev === "Failed to load hosted apps" ? null : prev));
     } catch {
-      setError("Failed to load hosted apps");
+      setApps([]);
+      setAppsLoaded(true);
     }
   }, [baseUrl]);
 
@@ -501,7 +522,10 @@ export default function Dashboard() {
       if (res.ok) {
         const data = await res.json();
         setDockerContainers(data.containers ?? []);
-        setDockerAvailable(data.available ?? false);
+        setDockerAvailable(typeof data.available === "boolean" ? data.available : false);
+      } else {
+        setDockerContainers([]);
+        setDockerAvailable(false);
       }
     } catch {
       setDockerContainers([]);
@@ -1201,15 +1225,58 @@ export default function Dashboard() {
   const showProcessTable = panelSettings?.dashboard.showProcessTable ?? true;
 
   const serverName = system?.os?.hostname || serverInfo?.hostname || "Server Panel";
-  const healthChecks = [
-    { label: "Web server", healthy: Boolean(installStatus?.nginx.installed), detail: installStatus?.nginx.installed ? "nginx ready" : "nginx missing" },
-    { label: "Docker", healthy: dockerAvailable, detail: dockerAvailable ? `${dockerContainers.length} containers visible` : "runtime unavailable" },
-    { label: "SSL", healthy: Boolean(ssl?.certbotInstalled), detail: ssl?.certbotInstalled ? `${ssl?.certs.length ?? 0} certs found` : "certbot missing" },
-    { label: "Firewall", healthy: Boolean(firewall?.enabled), detail: firewall?.enabled ? `${firewall.rules.length} rules active` : "ufw disabled" },
+  const healthChecks: { label: string; state: ServiceCheckState; detail: string }[] = [
+    installStatus
+      ? {
+          label: "Web server",
+          state: installStatus.nginx.installed ? "ready" : "attention",
+          detail: installStatus.nginx.installed ? "nginx ready" : "nginx missing",
+        }
+      : { label: "Web server", state: "loading", detail: "Checking nginx availability" },
+    dockerAvailable === null
+      ? { label: "Docker", state: "loading", detail: "Checking container runtime" }
+      : {
+          label: "Docker",
+          state: dockerAvailable ? "ready" : "attention",
+          detail: dockerAvailable ? `${dockerContainers.length} containers visible` : "runtime unavailable",
+        },
+    ssl
+      ? {
+          label: "SSL",
+          state: ssl.certbotInstalled ? "ready" : "attention",
+          detail: ssl.certbotInstalled ? `${ssl.certs.length ?? 0} certs found` : "certbot missing",
+        }
+      : { label: "SSL", state: "loading", detail: "Checking certbot and certificates" },
+    firewall
+      ? {
+          label: "Firewall",
+          state: firewall.enabled ? "ready" : "attention",
+          detail: firewall.enabled ? `${firewall.rules.length} rules active` : "ufw disabled",
+        }
+      : { label: "Firewall", state: "loading", detail: "Checking firewall status" },
   ];
-  const healthyChecks = healthChecks.filter((item) => item.healthy).length;
+  const healthyChecks = healthChecks.filter((item) => item.state === "ready").length;
+  const resolvedHealthChecks = healthChecks.filter((item) => item.state !== "loading").length;
   const healthTone =
-    healthyChecks >= 3 ? "Healthy" : healthyChecks >= 2 ? "Needs attention" : "At risk";
+    resolvedHealthChecks === 0
+      ? "Discovering"
+      : healthyChecks >= 3
+        ? "Healthy"
+        : healthyChecks >= 2
+          ? "Needs attention"
+          : "At risk";
+  const healthToneClass =
+    healthTone === "Healthy"
+      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+      : healthTone === "Needs attention"
+        ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+        : healthTone === "At risk"
+          ? "border-red-500/20 bg-red-500/10 text-red-300"
+          : "border-cyan-500/20 bg-cyan-500/10 text-cyan-300";
+  const healthSummaryText =
+    resolvedHealthChecks === 0
+      ? "Discovering core services"
+      : `${healthyChecks}/${healthChecks.length} core services ready`;
   const recentItems = [
     ...websites.slice(0, 3).map((site) => ({
       name: site.domain,
@@ -1592,7 +1659,7 @@ export default function Dashboard() {
             <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">System health</p>
             <p className="mt-2 text-lg font-semibold">{healthTone}</p>
             <p className="mt-1 text-sm text-[var(--muted)]">
-              {healthyChecks}/{healthChecks.length} core services ready
+              {healthSummaryText}
             </p>
           </div>
         </div>
@@ -1605,8 +1672,19 @@ export default function Dashboard() {
               <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Live server</p>
               <div className="mt-1 flex items-center gap-3">
                 <h2 className="text-xl font-semibold tracking-tight md:text-2xl">{serverName}</h2>
-                <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300">
-                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className={cx("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs", healthToneClass)}>
+                  <span
+                    className={cx(
+                      "h-2 w-2 rounded-full animate-pulse",
+                      healthTone === "Healthy"
+                        ? "bg-emerald-400"
+                        : healthTone === "Needs attention"
+                          ? "bg-amber-400"
+                          : healthTone === "At risk"
+                            ? "bg-red-400"
+                            : "bg-cyan-300"
+                    )}
+                  />
                   {healthTone}
                 </span>
               </div>
@@ -1754,6 +1832,11 @@ export default function Dashboard() {
                   <span>{websites.length}</span>
                 </div>
               </div>
+              {system?.warnings && system.warnings.length > 0 && (
+                <p className="mt-4 text-xs text-amber-300">
+                  Partial discovery: {system.warnings[0]}
+                </p>
+              )}
             </div>
           </section>
 
@@ -1793,8 +1876,8 @@ export default function Dashboard() {
             />
             <MetricCard
               label="Active apps"
-              value={`${apps.length}`}
-              meta={`${ports.length} listening ports detected`}
+              value={appsLoaded ? `${apps.length}` : "—"}
+              meta={portsLoaded ? `${ports.length} listening ports detected` : "Discovering open ports"}
               toneClass="text-emerald-400"
             />
             {showGpu && (
@@ -1836,7 +1919,13 @@ export default function Dashboard() {
               <QuickActionCard
                 title="Manage Containers"
                 description="Check running containers, restart failed ones, and review exposed ports quickly."
-                meta={dockerAvailable ? `${dockerContainers.length} containers visible` : "Docker runtime unavailable"}
+                meta={
+                  dockerAvailable === null
+                    ? "Checking Docker runtime"
+                    : dockerAvailable
+                      ? `${dockerContainers.length} containers visible`
+                      : "Docker runtime unavailable"
+                }
                 onClick={() => setActiveTab("docker")}
               />
               <QuickActionCard
@@ -2084,12 +2173,14 @@ export default function Dashboard() {
                     <span
                       className={cx(
                         "rounded-full px-2.5 py-1 text-xs",
-                        item.healthy
+                        item.state === "ready"
                           ? "bg-emerald-500/15 text-emerald-300"
-                          : "bg-amber-500/15 text-amber-300"
+                          : item.state === "attention"
+                            ? "bg-amber-500/15 text-amber-300"
+                            : "bg-cyan-500/15 text-cyan-300"
                       )}
                     >
-                      {item.healthy ? "Ready" : "Check"}
+                      {item.state === "ready" ? "Ready" : item.state === "attention" ? "Check" : "Loading"}
                     </span>
                   </div>
                 ))}
@@ -2164,37 +2255,45 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="max-h-72 overflow-y-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="sticky top-0 z-10 bg-[var(--card)] text-[var(--muted)]">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Process</th>
-                      <th className="px-4 py-3 font-medium">PID</th>
-                      <th className="px-4 py-3 font-medium text-right">CPU</th>
-                      <th className="px-4 py-3 font-medium w-20"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {processes.slice(0, 12).map((p) => (
-                      <tr key={p.pid} className="border-t border-[var(--border)] hover:bg-[var(--border)]/50">
-                        <td className="px-4 py-2">
-                          <p className="font-mono">{p.name}</p>
-                          <p className="text-xs text-[var(--muted)]">{p.user}</p>
-                        </td>
-                        <td className="px-4 py-2 text-[var(--muted)]">{p.pid}</td>
-                        <td className="px-4 py-2 text-right font-mono">{p.cpu ?? 0}%</td>
-                        <td className="px-4 py-2">
-                          <button
-                            onClick={() => killProcess(p.pid)}
-                            disabled={killingPid === p.pid}
-                            className="rounded bg-red-500/20 px-2 py-1 text-xs text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-                          >
-                            {killingPid === p.pid ? "…" : "Kill"}
-                          </button>
-                        </td>
+                {!processesLoaded && (
+                  <p className="px-4 py-5 text-sm text-[var(--muted)]">Discovering live processes...</p>
+                )}
+                {processesLoaded && processes.length === 0 && (
+                  <p className="px-4 py-5 text-sm text-[var(--muted)]">No process data available yet.</p>
+                )}
+                {processesLoaded && processes.length > 0 && (
+                  <table className="w-full text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-[var(--card)] text-[var(--muted)]">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">Process</th>
+                        <th className="px-4 py-3 font-medium">PID</th>
+                        <th className="px-4 py-3 font-medium text-right">CPU</th>
+                        <th className="px-4 py-3 font-medium w-20"></th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {processes.slice(0, 12).map((p) => (
+                        <tr key={p.pid} className="border-t border-[var(--border)] hover:bg-[var(--border)]/50">
+                          <td className="px-4 py-2">
+                            <p className="font-mono">{p.name}</p>
+                            <p className="text-xs text-[var(--muted)]">{p.user}</p>
+                          </td>
+                          <td className="px-4 py-2 text-[var(--muted)]">{p.pid}</td>
+                          <td className="px-4 py-2 text-right font-mono">{p.cpu ?? 0}%</td>
+                          <td className="px-4 py-2">
+                            <button
+                              onClick={() => killProcess(p.pid)}
+                              disabled={killingPid === p.pid}
+                              className="rounded bg-red-500/20 px-2 py-1 text-xs text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                            >
+                              {killingPid === p.pid ? "…" : "Kill"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
             ) : (
@@ -2216,31 +2315,39 @@ export default function Dashboard() {
             <div>
               <h2 className="mb-3 text-sm font-semibold">Listening ports</h2>
               <div className="max-h-64 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)]">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-[var(--card)] text-[var(--muted)]">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Port</th>
-                      <th className="px-4 py-3 font-medium">Protocol</th>
-                      <th className="px-4 py-3 font-medium">Process</th>
-                      <th className="px-4 py-3 font-medium">PID</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ports.map(({ port, connections }) =>
-                      connections.map((c, i) => (
-                        <tr
-                          key={`${port}-${i}`}
-                          className="border-t border-[var(--border)] hover:bg-[var(--border)]/50"
-                        >
-                          <td className="px-4 py-2 font-mono">{port}</td>
-                          <td className="px-4 py-2 text-[var(--muted)]">{c.protocol}</td>
-                          <td className="px-4 py-2 font-mono">{c.process || "—"}</td>
-                          <td className="px-4 py-2 text-[var(--muted)]">{c.pid ?? "—"}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                {!portsLoaded && (
+                  <p className="px-4 py-5 text-sm text-[var(--muted)]">Discovering listening ports...</p>
+                )}
+                {portsLoaded && ports.length === 0 && (
+                  <p className="px-4 py-5 text-sm text-[var(--muted)]">No listening ports detected yet.</p>
+                )}
+                {portsLoaded && ports.length > 0 && (
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-[var(--card)] text-[var(--muted)]">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">Port</th>
+                        <th className="px-4 py-3 font-medium">Protocol</th>
+                        <th className="px-4 py-3 font-medium">Process</th>
+                        <th className="px-4 py-3 font-medium">PID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ports.map(({ port, connections }) =>
+                        connections.map((c, i) => (
+                          <tr
+                            key={`${port}-${i}`}
+                            className="border-t border-[var(--border)] hover:bg-[var(--border)]/50"
+                          >
+                            <td className="px-4 py-2 font-mono">{port}</td>
+                            <td className="px-4 py-2 text-[var(--muted)]">{c.protocol}</td>
+                            <td className="px-4 py-2 font-mono">{c.process || "—"}</td>
+                            <td className="px-4 py-2 text-[var(--muted)]">{c.pid ?? "—"}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
             <div>
@@ -2729,7 +2836,11 @@ export default function Dashboard() {
               </div>
             </div>
           )}
-          {!dockerAvailable ? (
+          {dockerAvailable === null ? (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-6 py-12">
+              <p className="text-center text-[var(--muted)]">Checking Docker runtime and containers...</p>
+            </div>
+          ) : !dockerAvailable ? (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-6 py-12">
               <p className="mb-4 text-center text-[var(--muted)]">
                 Docker not available. Install Docker or ensure the panel has access to /var/run/docker.sock

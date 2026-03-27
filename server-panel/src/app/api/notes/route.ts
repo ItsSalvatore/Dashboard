@@ -41,7 +41,7 @@ export async function POST(request: Request) {
 
   try {
     const NOTES_FILE = await getNotesFile();
-    const body = await request.json().catch(() => ({}));
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const content = typeof body.content === "string" ? body.content : "";
 
     await writeFile(NOTES_FILE, content, "utf-8");

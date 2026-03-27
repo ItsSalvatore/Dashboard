@@ -40,8 +40,8 @@ export async function POST(request: Request) {
   const { authorized } = await requireAuth();
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const body = await request.json().catch(() => ({}));
-    const action = body.action;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const action = typeof body.action === "string" ? body.action : "";
 
     if (action === "reload-nginx") {
       await runCommand("nginx", ["-t"]);

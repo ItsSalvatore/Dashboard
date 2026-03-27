@@ -78,8 +78,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const body = await request.json().catch(() => ({}));
-    const action = typeof body.action === "string" ? (body.action as ActionId) : null;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const action =
+      typeof body.action === "string" ? (body.action as ActionId) : null;
 
     if (!action || !(action in ACTIONS)) {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });

@@ -33,7 +33,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = typeof body.action === "string" ? body.action : "";
     const password = typeof body.password === "string" ? body.password : "";
     const code = typeof body.code === "string" ? body.code : "";

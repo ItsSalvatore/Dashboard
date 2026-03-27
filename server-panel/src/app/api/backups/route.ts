@@ -40,12 +40,15 @@ export async function POST(request: Request) {
   const { authorized } = await requireAuth();
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await request.json().catch(() => ({}));
-  const action = body.action;
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const action = typeof body.action === "string" ? body.action : "";
 
   if (action === "create") {
     const webRoot = process.env.WEB_ROOT || "/var/www";
-    const site = (body.site || "").trim().toLowerCase().replace(/[^a-z0-9.-]/g, "");
+    const site = (typeof body.site === "string" ? body.site : "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]/g, "");
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const filename = site
       ? `backup-${site}-${timestamp}.tar.gz`
@@ -83,7 +86,7 @@ export async function POST(request: Request) {
   }
 
   if (action === "restore") {
-    const filename = body.filename;
+    const filename = typeof body.filename === "string" ? body.filename : "";
     if (!filename || !/^backup[-a-z0-9.T]+\.tar\.gz$/.test(filename) || filename.includes("..")) {
       return NextResponse.json({ error: "Invalid filename" }, { status: 400 });
     }
@@ -118,7 +121,7 @@ export async function POST(request: Request) {
   }
 
   if (action === "delete") {
-    const filename = body.filename;
+    const filename = typeof body.filename === "string" ? body.filename : "";
     if (!filename || !filename.endsWith(".tar.gz") || filename.includes("..")) {
       return NextResponse.json({ error: "Invalid filename" }, { status: 400 });
     }

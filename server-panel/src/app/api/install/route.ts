@@ -76,8 +76,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const body = await request.json().catch(() => ({}));
-    const pkg = body.package as InstallablePackage;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const pkg =
+      body.package === "docker" || body.package === "nginx" || body.package === "certbot"
+        ? body.package
+        : null;
 
     if (!pkg || !INSTALL_SCRIPTS[pkg]) {
       return NextResponse.json(

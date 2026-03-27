@@ -49,11 +49,11 @@ export async function POST(request: Request) {
   const { authorized } = await requireAuth();
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await request.json().catch(() => ({}));
-  const action = body.action;
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const action = typeof body.action === "string" ? body.action : "";
 
   if (action === "create-zone") {
-    const domain = sanitizeDomain(body.domain ?? "");
+    const domain = sanitizeDomain(typeof body.domain === "string" ? body.domain : "");
     if (!isValidDomain(domain)) {
       return NextResponse.json({ error: "Invalid domain" }, { status: 400 });
     }
@@ -93,9 +93,9 @@ www IN A 127.0.0.1
   }
 
   if (action === "add-record") {
-    const zone = sanitizeDomain(body.zone ?? "");
-    const name = body.name ?? "@";
-    const type = (body.type ?? "A").toUpperCase();
+    const zone = sanitizeDomain(typeof body.zone === "string" ? body.zone : "");
+    const name = typeof body.name === "string" && body.name.trim() ? body.name : "@";
+    const type = (typeof body.type === "string" ? body.type : "A").toUpperCase();
     const value = String(body.value ?? "").trim();
     if (!zone || !value || value.length > 500) {
       return NextResponse.json({ error: "Invalid record" }, { status: 400 });
@@ -135,8 +135,8 @@ www IN A 127.0.0.1
   }
 
   if (action === "delete-record") {
-    const zone = sanitizeDomain(body.zone ?? "");
-    const recordLine = body.line;
+    const zone = sanitizeDomain(typeof body.zone === "string" ? body.zone : "");
+    const recordLine = typeof body.line === "number" ? body.line : -1;
     const zoneFile = join(BIND_ZONE_DIR, `${zone}.zone`);
     if (!existsSync(zoneFile)) {
       return NextResponse.json({ error: "Zone not found" }, { status: 404 });

@@ -25,9 +25,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const body = await request.json().catch(() => ({}));
-    const path = body.path || "";
-    const name = (body.name || "").trim().replace(/\/+/g, "");
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const path = typeof body.path === "string" ? body.path : "";
+    const name = (typeof body.name === "string" ? body.name : "").trim().replace(/\/+/g, "");
 
     if (!name || hasPathTraversal(path) || hasPathTraversal(name)) {
       return NextResponse.json({ error: "Invalid path or name" }, { status: 400 });
