@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { readdir, stat } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
 import { requireAuth } from "@/lib/auth";
-
-const execAsync = promisify(exec);
+import { recordAuditEvent } from "@/lib/audit";
+import { runCommand } from "@/lib/commands";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -55,15 +53,32 @@ export async function POST(request: Request) {
     const filepath = join(BACKUP_DIR, filename);
 
     try {
-      await execAsync(`mkdir -p ${BACKUP_DIR}`);
-      const backupPath = site
-        ? join(webRoot, site).replace(/^\//, "")
-        : `${webRoot.replace(/^\//, "")} etc/nginx`.trim();
-      await execAsync(`tar -czf ${filepath} -C / ${backupPath} 2>/dev/null`);
+      await runCommand("mkdir", ["-p", BACKUP_DIR]);
+      const backupPaths = site
+        ? [join(webRoot, site).replace(/^\//, "")]
+        : [webRoot.replace(/^\//, ""), "etc/nginx"];
+      await runCommand("tar", ["-czf", filepath, "-C", "/", ...backupPaths]);
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "backup.create",
+        actor: "admin",
+        outcome: "success",
+        details: { filename, site: site || "all" },
+      });
       return NextResponse.json({ ok: true, filename, site: site || null });
     } catch (err: unknown) {
-      const e = err as { stderr?: string };
-      return NextResponse.json({ error: e.stderr ?? "Backup failed" }, { status: 500 });
+      const e = err as { stderr?: string; stdout?: string; message?: string };
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "backup.create",
+        actor: "admin",
+        outcome: "failure",
+        details: { reason: e.message || "backup_failed", site: site || "all" },
+      });
+      return NextResponse.json(
+        { error: e.stderr || e.stdout || e.message || "Backup failed" },
+        { status: 500 }
+      );
     }
   }
 
@@ -77,11 +92,28 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Backup not found" }, { status: 404 });
     }
     try {
-      await execAsync(`tar -xzf ${filepath} -C /`);
+      await runCommand("tar", ["-xzf", filepath, "-C", "/"]);
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "backup.restore",
+        actor: "admin",
+        outcome: "success",
+        details: { filename },
+      });
       return NextResponse.json({ ok: true });
     } catch (err: unknown) {
-      const e = err as { stderr?: string };
-      return NextResponse.json({ error: e.stderr ?? "Restore failed" }, { status: 500 });
+      const e = err as { stderr?: string; stdout?: string; message?: string };
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "backup.restore",
+        actor: "admin",
+        outcome: "failure",
+        details: { filename, reason: e.message || "restore_failed" },
+      });
+      return NextResponse.json(
+        { error: e.stderr || e.stdout || e.message || "Restore failed" },
+        { status: 500 }
+      );
     }
   }
 
@@ -95,10 +127,28 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid path" }, { status: 400 });
     }
     try {
-      await execAsync(`rm -f ${filepath}`);
+      await runCommand("rm", ["-f", filepath]);
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "backup.delete",
+        actor: "admin",
+        outcome: "success",
+        details: { filename },
+      });
       return NextResponse.json({ ok: true });
-    } catch {
-      return NextResponse.json({ error: "Delete failed" }, { status: 500 });
+    } catch (error: unknown) {
+      const err = error as { stderr?: string; stdout?: string; message?: string };
+      await recordAuditEvent({
+        timestamp: new Date().toISOString(),
+        action: "backup.delete",
+        actor: "admin",
+        outcome: "failure",
+        details: { filename, reason: err.message || "delete_failed" },
+      });
+      return NextResponse.json(
+        { error: err.stderr || err.stdout || err.message || "Delete failed" },
+        { status: 500 }
+      );
     }
   }
 

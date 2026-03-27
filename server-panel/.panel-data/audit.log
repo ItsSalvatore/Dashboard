@@ -1,1 +1,2 @@
 {"timestamp":"2026-03-19T19:48:33.446Z","action":"auth.login","actor":"admin","outcome":"success"}
+{"timestamp":"2026-03-27T18:57:33.846Z","action":"auth.login","actor":"::1","outcome":"success"}

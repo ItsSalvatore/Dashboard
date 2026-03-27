@@ -1,19 +1,24 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { readdir, readFile, writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
 import { isValidDomain, sanitizeDomain } from "@/lib/validation";
 import { requireAuth } from "@/lib/auth";
-
-const execAsync = promisify(exec);
+import { recordAuditEvent } from "@/lib/audit";
+import { runFirstSuccessful } from "@/lib/commands";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const BIND_ZONE_DIR = "/etc/bind/zones";
 const BIND_NAMED_CONF = "/etc/bind/named.conf.local";
+
+async function reloadDnsService() {
+  await runFirstSuccessful([
+    { command: "systemctl", args: ["reload", "bind9"] },
+    { command: "service", args: ["named", "reload"] },
+  ]);
+}
 
 export async function GET() {
   const { authorized } = await requireAuth();
@@ -76,7 +81,14 @@ www IN A 127.0.0.1
     if (!namedConf.includes(`zone "${domain}"`)) {
       await writeFile(BIND_NAMED_CONF, namedConf + "\n" + zoneConfig);
     }
-    await execAsync("systemctl reload bind9 2>/dev/null || service named reload 2>/dev/null || true");
+    await reloadDnsService();
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "dns.zone.create",
+      actor: "admin",
+      outcome: "success",
+      details: { domain },
+    });
     return NextResponse.json({ ok: true, domain });
   }
 
@@ -111,7 +123,14 @@ www IN A 127.0.0.1
     }
     lines.push(record);
     await writeFile(zoneFile, lines.join("\n"));
-    await execAsync("systemctl reload bind9 2>/dev/null || service named reload 2>/dev/null || true");
+    await reloadDnsService();
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "dns.record.add",
+      actor: "admin",
+      outcome: "success",
+      details: { zone, type, name },
+    });
     return NextResponse.json({ ok: true });
   }
 
@@ -125,7 +144,14 @@ www IN A 127.0.0.1
     const content = await readFile(zoneFile, "utf8");
     const lines = content.split("\n").filter((_, i) => i !== recordLine);
     await writeFile(zoneFile, lines.join("\n"));
-    await execAsync("systemctl reload bind9 2>/dev/null || service named reload 2>/dev/null || true");
+    await reloadDnsService();
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "dns.record.delete",
+      actor: "admin",
+      outcome: "success",
+      details: { zone, line: typeof recordLine === "number" ? recordLine : -1 },
+    });
     return NextResponse.json({ ok: true });
   }
 

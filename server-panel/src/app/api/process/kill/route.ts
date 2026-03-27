@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { requireAuth } from "@/lib/auth";
-
-const execAsync = promisify(exec);
+import { recordAuditEvent } from "@/lib/audit";
+import { runCommand } from "@/lib/commands";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -24,12 +22,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid pid range" }, { status: 400 });
     }
 
-    await execAsync(`kill ${pidNum}`);
+    await runCommand("kill", [String(pidNum)]);
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "process.kill",
+      actor: "admin",
+      outcome: "success",
+      details: { pid: pidNum },
+    });
     return NextResponse.json({ ok: true, pid: pidNum });
   } catch (error: unknown) {
-    const err = error as { stderr?: string; code?: number };
+    const err = error as { stderr?: string; stdout?: string; code?: number; message?: string };
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "process.kill",
+      actor: "admin",
+      outcome: "failure",
+      details: { reason: err.message || "kill_failed" },
+    });
     return NextResponse.json(
-      { error: err.stderr ?? "Failed to kill process" },
+      { error: err.stderr || err.stdout || err.message || "Failed to kill process" },
       { status: 500 }
     );
   }

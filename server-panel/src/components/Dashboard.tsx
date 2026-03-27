@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   AreaChart,
   Area,
@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import AppCard from "./AppCard";
+import CommandPalette, { type CommandPaletteItem } from "./CommandPalette";
 
 type SystemData = {
   cpu: { current: number; cores: number };
@@ -112,6 +113,7 @@ type TwoFactorState = {
 
 type Tab =
   | "overview"
+  | "catalog"
   | "apps"
   | "docker"
   | "websites"
@@ -129,6 +131,21 @@ type Tab =
   | "settings"
   | "actions"
   | "audit";
+
+type CatalogFilter = "all" | "sites" | "apps" | "containers" | "integrations" | "attention";
+
+type CatalogItem = {
+  id: string;
+  kind: "site" | "app" | "container" | "integration";
+  title: string;
+  subtitle: string;
+  meta: string;
+  statusLabel: string;
+  statusTone: "neutral" | "success" | "warning";
+  searchableText: string;
+  openLabel: string;
+  open: () => void;
+};
 
 type OverviewSectionKey =
   | "metrics"
@@ -170,6 +187,25 @@ function formatUptime(seconds: number): string {
   if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
+}
+
+function normalizeSearchValue(value: string | number | null | undefined): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .trim();
+}
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
 function MetricCard({
@@ -298,6 +334,13 @@ export default function Dashboard() {
   const [sslRenewing, setSslRenewing] = useState(false);
   const [dockerContainers, setDockerContainers] = useState<DockerContainer[]>([]);
   const [dockerAvailable, setDockerAvailable] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>("all");
+  const [appsQuery, setAppsQuery] = useState("");
+  const [appsView, setAppsView] = useState<"gallery" | "list">("gallery");
+  const [dockerQuery, setDockerQuery] = useState("");
+  const [dockerStateFilter, setDockerStateFilter] = useState<"all" | "running" | "stopped">("all");
   const [websites, setWebsites] = useState<Website[]>([]);
   const [newDomain, setNewDomain] = useState("");
   const [newWordpress, setNewWordpress] = useState(false);
@@ -639,6 +682,12 @@ export default function Dashboard() {
     }
   }, []);
 
+  const openExternalUrl = useCallback((url: string) => {
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof window !== "undefined" && !baseUrl) {
       setBaseUrl(`${window.location.protocol}//${window.location.hostname}`);
@@ -669,6 +718,22 @@ export default function Dashboard() {
     const listener = (event: MediaQueryListEvent) => applyViewportMode(event.matches);
     media.addEventListener("change", listener);
     return () => media.removeEventListener("change", listener);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        if (isEditableElement(event.target)) {
+          return;
+        }
+
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   useEffect(() => {
@@ -1059,7 +1124,7 @@ export default function Dashboard() {
     setOverviewSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const runSafeAction = async (action: SafeAction) => {
+  const runSafeAction = useCallback(async (action: SafeAction) => {
     setActionRunning(action.id);
     setError(null);
     try {
@@ -1083,47 +1148,53 @@ export default function Dashboard() {
     } finally {
       setActionRunning(null);
     }
-  };
+  }, [fetchAuditEntries]);
 
-  const navGroups: {
-    title: string;
-    items: { id: Tab; label: string; meta?: string }[];
-  }[] = [
+  const navGroups = useMemo<
     {
-      title: "Primary",
-      items: [
-        { id: "overview", label: "Overview", meta: "Health and recent activity" },
-        { id: "websites", label: "Sites", meta: `${websites.length} configured` },
-        { id: "docker", label: "Containers", meta: `${dockerContainers.length} detected` },
-        { id: "apps", label: "Hosted Apps", meta: `${apps.length} reachable` },
-      ],
-    },
-    {
-      title: "Operations",
-      items: [
-        { id: "backups", label: "Backups" },
-        { id: "ssl", label: "SSL" },
-        { id: "dns", label: "DNS" },
-        { id: "firewall", label: "Firewall" },
-        { id: "files", label: "Files" },
-        { id: "integrations", label: "Integrations", meta: "Immich, Nextcloud, custom apps" },
-      ],
-    },
-    {
-      title: "System",
-      items: [
-        { id: "server", label: "Server" },
-        { id: "installs", label: "Installs" },
-        { id: "ftp", label: "FTP" },
-        { id: "minecraft", label: "Minecraft" },
-        { id: "actions", label: "Safe Actions", meta: "Approved CLI operations" },
-        { id: "audit", label: "Audit", meta: "Recent admin activity" },
-        { id: "notes", label: "Notes" },
-        { id: "settings", label: "Settings", meta: "Live dashboard and defaults" },
-      ],
-    },
-  ];
-  const compactNavItems = navGroups.flatMap((group) => group.items);
+      title: string;
+      items: { id: Tab; label: string; meta?: string }[];
+    }[]
+  >(
+    () => [
+      {
+        title: "Primary",
+        items: [
+          { id: "overview", label: "Overview", meta: "Health and recent activity" },
+          { id: "catalog", label: "Catalog", meta: "Unified app and service discovery" },
+          { id: "websites", label: "Sites", meta: `${websites.length} configured` },
+          { id: "docker", label: "Containers", meta: `${dockerContainers.length} detected` },
+          { id: "apps", label: "Hosted Apps", meta: `${apps.length} detected` },
+        ],
+      },
+      {
+        title: "Operations",
+        items: [
+          { id: "backups", label: "Backups" },
+          { id: "ssl", label: "SSL" },
+          { id: "dns", label: "DNS" },
+          { id: "firewall", label: "Firewall" },
+          { id: "files", label: "Files" },
+          { id: "integrations", label: "Integrations", meta: "Immich, Nextcloud, custom apps" },
+        ],
+      },
+      {
+        title: "System",
+        items: [
+          { id: "server", label: "Server" },
+          { id: "installs", label: "Installs" },
+          { id: "ftp", label: "FTP" },
+          { id: "minecraft", label: "Minecraft" },
+          { id: "actions", label: "Safe Actions", meta: "Approved CLI operations" },
+          { id: "audit", label: "Audit", meta: "Recent admin activity" },
+          { id: "notes", label: "Notes" },
+          { id: "settings", label: "Settings", meta: "Live dashboard and defaults" },
+        ],
+      },
+    ],
+    [apps.length, dockerContainers.length, websites.length]
+  );
+  const compactNavItems = useMemo(() => navGroups.flatMap((group) => group.items), [navGroups]);
   const livePollMs = panelSettings?.dashboard.pollingIntervalMs ?? DEFAULT_POLL_INTERVAL;
   const compactMode = Boolean(panelSettings?.dashboard.compactMode);
   const showGpu = panelSettings?.dashboard.showGpu ?? true;
@@ -1154,6 +1225,255 @@ export default function Dashboard() {
   const topVolumes = system?.storage?.volumes?.slice(0, 4) ?? [];
   const storageDevices = system?.storage?.devices?.slice(0, 4) ?? [];
   const enabledIntegrations = integrations.filter((integration) => integration.enabled);
+  const filteredApps = useMemo(() => {
+    const query = normalizeSearchValue(appsQuery);
+    if (!query) {
+      return apps;
+    }
+
+    return apps.filter((app) =>
+      [app.name, app.url, app.process, app.port]
+        .map((value) => normalizeSearchValue(value))
+        .some((value) => value.includes(query))
+    );
+  }, [apps, appsQuery]);
+  const runningDockerCount = dockerContainers.filter((container) => container.state === "running").length;
+  const filteredDockerContainers = useMemo(() => {
+    const query = normalizeSearchValue(dockerQuery);
+
+    return dockerContainers.filter((container) => {
+      const matchesState =
+        dockerStateFilter === "all"
+          ? true
+          : dockerStateFilter === "running"
+            ? container.state === "running"
+            : container.state !== "running";
+
+      if (!matchesState) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return [container.name, container.image, container.state, container.status, container.ports.join(" ")]
+        .map((value) => normalizeSearchValue(value))
+        .some((value) => value.includes(query));
+    });
+  }, [dockerContainers, dockerQuery, dockerStateFilter]);
+  const offlineIntegrations = enabledIntegrations.filter((integration) => integration.status !== "healthy").length;
+  const catalogItems = useMemo<CatalogItem[]>(() => {
+    const siteItems: CatalogItem[] = websites.map((site) => ({
+      id: `site-${site.domain}`,
+      kind: "site",
+      title: site.domain,
+      subtitle: site.root,
+      meta: site.configPath,
+      statusLabel: "Configured",
+      statusTone: "neutral",
+      searchableText: [site.domain, site.root, site.configPath].join(" "),
+      openLabel: "Open site details",
+      open: () => {
+        setSelectedWebsite(site.domain);
+        setActiveTab("websites");
+      },
+    }));
+
+    const appItems: CatalogItem[] = apps.map((app) => ({
+      id: `app-${app.port}-${app.name}`,
+      kind: "app",
+      title: app.name,
+      subtitle: app.process || app.url,
+      meta: `${app.url} · Port ${app.port}`,
+      statusLabel: "Reachable",
+      statusTone: "success",
+      searchableText: [app.name, app.process, app.url, app.port].join(" "),
+      openLabel: "Open app",
+      open: () => openExternalUrl(app.url),
+    }));
+
+    const containerItems: CatalogItem[] = dockerContainers.map((container) => ({
+      id: `container-${container.id}`,
+      kind: "container",
+      title: container.name,
+      subtitle: container.image,
+      meta: container.ports.join(", ") || "No published ports",
+      statusLabel: container.state === "running" ? "Running" : "Needs attention",
+      statusTone: container.state === "running" ? "success" : "warning",
+      searchableText: [
+        container.name,
+        container.image,
+        container.state,
+        container.status,
+        container.ports.join(" "),
+      ].join(" "),
+      openLabel: "Open containers",
+      open: () => {
+        setDockerQuery(container.name);
+        setDockerStateFilter("all");
+        setActiveTab("docker");
+      },
+    }));
+
+    const integrationItems: CatalogItem[] = enabledIntegrations.map((integration) => ({
+      id: `integration-${integration.id}`,
+      kind: "integration",
+      title: integration.name,
+      subtitle: integration.description,
+      meta: integration.url || integration.port || integration.category,
+      statusLabel: integration.status === "healthy" ? "Healthy" : "Needs attention",
+      statusTone: integration.status === "healthy" ? "success" : "warning",
+      searchableText: [
+        integration.name,
+        integration.description,
+        integration.url,
+        integration.port,
+        integration.category,
+        integration.status,
+      ].join(" "),
+      openLabel: integration.url ? "Open integration" : "Open integrations",
+      open: () => {
+        if (integration.url) {
+          openExternalUrl(integration.url);
+        } else {
+          setActiveTab("integrations");
+        }
+      },
+    }));
+
+    return [...siteItems, ...appItems, ...containerItems, ...integrationItems];
+  }, [apps, dockerContainers, enabledIntegrations, openExternalUrl, websites]);
+  const filteredCatalogItems = useMemo(() => {
+    const query = normalizeSearchValue(catalogQuery);
+
+    return catalogItems.filter((item) => {
+      const matchesFilter =
+        catalogFilter === "all"
+          ? true
+          : catalogFilter === "attention"
+            ? item.statusTone === "warning"
+            : catalogFilter === "sites"
+              ? item.kind === "site"
+              : catalogFilter === "apps"
+                ? item.kind === "app"
+                : catalogFilter === "containers"
+                  ? item.kind === "container"
+                  : item.kind === "integration";
+
+      if (!matchesFilter) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return normalizeSearchValue(item.searchableText).includes(query);
+    });
+  }, [catalogFilter, catalogItems, catalogQuery]);
+  const groupedCatalogItems = useMemo(() => {
+    const order: CatalogItem["kind"][] = ["site", "app", "container", "integration"];
+
+    return order
+      .map((kind) => ({
+        kind,
+        items: filteredCatalogItems.filter((item) => item.kind === kind),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [filteredCatalogItems]);
+  const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
+    const navigationItems: CommandPaletteItem[] = navGroups.flatMap((group) =>
+      group.items.map((item) => ({
+        id: `nav-${item.id}`,
+        group: "Navigation",
+        title: item.label,
+        subtitle: item.meta || group.title,
+        keywords: `${item.id} ${group.title}`,
+        onSelect: () => setActiveTab(item.id),
+      }))
+    );
+
+    const siteItems: CommandPaletteItem[] = websites.slice(0, 20).map((site) => ({
+      id: `palette-site-${site.domain}`,
+      group: "Sites",
+      title: site.domain,
+      subtitle: site.root,
+      keywords: `${site.configPath} website`,
+      onSelect: () => {
+        setSelectedWebsite(site.domain);
+        setActiveTab("websites");
+      },
+    }));
+
+    const appItems: CommandPaletteItem[] = apps.slice(0, 20).map((app) => ({
+      id: `palette-app-${app.port}-${app.name}`,
+      group: "Hosted Apps",
+      title: app.name,
+      subtitle: `${app.url} · ${app.process || `Port ${app.port}`}`,
+      keywords: `${app.port} ${app.process || ""}`,
+      onSelect: () => openExternalUrl(app.url),
+    }));
+
+    const containerItems: CommandPaletteItem[] = dockerContainers.slice(0, 20).map((container) => ({
+      id: `palette-container-${container.id}`,
+      group: "Containers",
+      title: container.name,
+      subtitle: `${container.image} · ${container.state}`,
+      keywords: `${container.status} ${container.ports.join(" ")}`,
+      onSelect: () => {
+        setDockerQuery(container.name);
+        setDockerStateFilter("all");
+        setActiveTab("docker");
+      },
+    }));
+
+    const integrationItems: CommandPaletteItem[] = enabledIntegrations.slice(0, 20).map((integration) => ({
+      id: `palette-integration-${integration.id}`,
+      group: "Integrations",
+      title: integration.name,
+      subtitle: `${integration.status} · ${integration.url || integration.category}`,
+      keywords: `${integration.description} ${integration.port}`,
+      onSelect: () => {
+        if (integration.url) {
+          openExternalUrl(integration.url);
+        } else {
+          setActiveTab("integrations");
+        }
+      },
+    }));
+
+    const safeActionItems: CommandPaletteItem[] = safeActions.map((action) => ({
+      id: `palette-action-${action.id}`,
+      group: "Safe Actions",
+      title: action.label,
+      subtitle: action.description,
+      keywords: action.id,
+      onSelect: () => {
+        setActiveTab("actions");
+        void runSafeAction(action);
+      },
+    }));
+
+    const auditItems: CommandPaletteItem[] = auditEntries.slice(0, 10).map((entry, index) => ({
+      id: `palette-audit-${index}-${entry.timestamp}`,
+      group: "Recent Audit",
+      title: entry.action,
+      subtitle: `${entry.actor} · ${entry.outcome}`,
+      keywords: JSON.stringify(entry.details ?? {}),
+      onSelect: () => setActiveTab("audit"),
+    }));
+
+    return [
+      ...navigationItems,
+      ...siteItems,
+      ...appItems,
+      ...containerItems,
+      ...integrationItems,
+      ...safeActionItems,
+      ...auditItems,
+    ];
+  }, [apps, auditEntries, dockerContainers, enabledIntegrations, navGroups, openExternalUrl, runSafeAction, safeActions, websites]);
   const createSiteSummary = [
     `Web root: ${panelSettings?.defaults.fileManagerRootLabel || "/var/www"}/${newDomain.trim() || "example.com"}`,
     `Web server: ${newWebserver === "nginx" ? "nginx" : "OpenLiteSpeed"}`,
@@ -1164,6 +1484,12 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.12),_transparent_35%),_var(--background)]">
+      {commandPaletteOpen && (
+        <CommandPalette
+          items={commandPaletteItems}
+          onClose={() => setCommandPaletteOpen(false)}
+        />
+      )}
       {mobileNavOpen && (
         <div className="fixed inset-0 z-40 xl:hidden">
           <button
@@ -1292,6 +1618,13 @@ export default function Dashboard() {
                 className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] xl:hidden"
               >
                 Menu
+              </button>
+              <button
+                onClick={() => setCommandPaletteOpen(true)}
+                className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] transition hover:bg-[var(--card)]"
+              >
+                Search
+                <span className="ml-2 hidden text-xs text-[var(--muted)] sm:inline">Ctrl K</span>
               </button>
               <button
                 onClick={() => setActiveTab("websites")}
@@ -1940,16 +2273,334 @@ export default function Dashboard() {
         </>
       )}
 
+      {activeTab === "catalog" && (
+        <section className="space-y-6">
+          <div className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
+            <div className="rounded-3xl border border-[var(--border)] bg-[linear-gradient(135deg,rgba(34,211,238,0.16),rgba(24,24,27,0.96)_60%)] p-6">
+              <p className="text-xs uppercase tracking-[0.2em] text-[var(--accent)]">Unified Discovery</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-tight">Everything running, in one clean catalog</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                Search across sites, hosted apps, Docker containers, and enabled integrations without
+                bouncing between tabs first.
+              </p>
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Sites</p>
+                  <p className="mt-2 text-2xl font-semibold">{websites.length}</p>
+                </div>
+                <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Apps</p>
+                  <p className="mt-2 text-2xl font-semibold">{apps.length}</p>
+                </div>
+                <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Containers</p>
+                  <p className="mt-2 text-2xl font-semibold">{dockerContainers.length}</p>
+                </div>
+                <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Attention</p>
+                  <p className="mt-2 text-2xl font-semibold">{filteredCatalogItems.filter((item) => item.statusTone === "warning").length}</p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6">
+              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Quick access</p>
+              <div className="mt-4 space-y-3">
+                <button
+                  onClick={() => setCommandPaletteOpen(true)}
+                  className="flex w-full items-center justify-between rounded-2xl border border-[var(--border)] px-4 py-3 text-left transition hover:bg-[var(--border)]/50"
+                >
+                  <div>
+                    <p className="font-medium">Open command palette</p>
+                    <p className="mt-1 text-sm text-[var(--muted)]">Jump to tabs, resources, and safe actions with Ctrl/Cmd+K.</p>
+                  </div>
+                  <span className="text-xs text-[var(--muted)]">Ctrl K</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("apps")}
+                  className="flex w-full items-center justify-between rounded-2xl border border-[var(--border)] px-4 py-3 text-left transition hover:bg-[var(--border)]/50"
+                >
+                  <div>
+                    <p className="font-medium">Browse hosted apps</p>
+                    <p className="mt-1 text-sm text-[var(--muted)]">Use gallery or compact list views for HTTP services.</p>
+                  </div>
+                  <span className="text-xs text-[var(--muted)]">Apps</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("docker")}
+                  className="flex w-full items-center justify-between rounded-2xl border border-[var(--border)] px-4 py-3 text-left transition hover:bg-[var(--border)]/50"
+                >
+                  <div>
+                    <p className="font-medium">Review containers</p>
+                    <p className="mt-1 text-sm text-[var(--muted)]">Filter by state or image before taking runtime actions.</p>
+                  </div>
+                  <span className="text-xs text-[var(--muted)]">Docker</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div className="grid gap-4 xl:grid-cols-[1.2fr_auto] xl:items-end">
+              <label className="block">
+                <span className="mb-2 block text-sm text-[var(--muted)]">Search the catalog</span>
+                <input
+                  type="text"
+                  value={catalogQuery}
+                  onChange={(e) => setCatalogQuery(e.target.value)}
+                  placeholder="Search name, domain, image, URL, or port"
+                  className="w-full rounded-2xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ["all", "All"],
+                  ["sites", "Sites"],
+                  ["apps", "Apps"],
+                  ["containers", "Containers"],
+                  ["integrations", "Integrations"],
+                  ["attention", "Needs attention"],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    onClick={() => setCatalogFilter(value)}
+                    className={cx(
+                      "rounded-xl border px-3 py-2 text-sm transition",
+                      catalogFilter === value
+                        ? "border-[var(--accent)]/40 bg-[var(--accent)]/12 text-[var(--accent)]"
+                        : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--border)]/50"
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-[1.45fr_0.85fr]">
+            <div className="space-y-6">
+              {groupedCatalogItems.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--card)] px-6 py-12 text-center">
+                  <p className="text-sm font-medium text-[var(--foreground)]">Nothing matches the current catalog filters.</p>
+                  <p className="mt-2 text-sm text-[var(--muted)]">
+                    Clear the search or switch filter chips to broaden the results.
+                  </p>
+                </div>
+              ) : (
+                groupedCatalogItems.map((group) => (
+                  <div key={group.kind} className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-base font-semibold capitalize">
+                        {group.kind === "app" ? "Hosted apps" : group.kind === "container" ? "Containers" : `${group.kind}s`}
+                      </h3>
+                      <span className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted)]">
+                        {group.items.length} visible
+                      </span>
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {group.items.map((item) => (
+                        <div
+                          key={item.id}
+                          className="rounded-2xl border border-[var(--border)] bg-[var(--card)]/80 p-4 transition hover:border-[var(--accent)]/30"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="font-medium text-[var(--foreground)]">{item.title}</p>
+                              <p className="mt-1 text-sm text-[var(--muted)]">{item.subtitle}</p>
+                            </div>
+                            <span
+                              className={cx(
+                                "rounded-full px-2.5 py-1 text-xs",
+                                item.statusTone === "success"
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : item.statusTone === "warning"
+                                    ? "bg-amber-500/15 text-amber-300"
+                                    : "bg-[var(--border)] text-[var(--muted)]"
+                              )}
+                            >
+                              {item.statusLabel}
+                            </span>
+                          </div>
+                          <p className="mt-3 text-sm text-[var(--muted)]">{item.meta}</p>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <button
+                              onClick={item.open}
+                              className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-medium text-slate-950 transition hover:bg-cyan-300"
+                            >
+                              {item.openLabel}
+                            </button>
+                            <button
+                              onClick={() => setCommandPaletteOpen(true)}
+                              className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--muted)] transition hover:bg-[var(--border)]/50 hover:text-[var(--foreground)]"
+                            >
+                              More actions
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="space-y-6">
+              <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-base font-semibold">Recent audit</h3>
+                  <button
+                    onClick={() => setActiveTab("audit")}
+                    className="text-xs text-[var(--accent)] hover:underline"
+                  >
+                    Open audit
+                  </button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {auditEntries.length === 0 ? (
+                    <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--muted)]">
+                      No audit events recorded yet.
+                    </p>
+                  ) : (
+                    auditEntries.slice(0, 6).map((entry) => (
+                      <div key={`${entry.timestamp}-${entry.action}`} className="rounded-xl border border-[var(--border)] px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-medium">{entry.action}</p>
+                          <span
+                            className={cx(
+                              "rounded-full px-2 py-0.5 text-xs",
+                              entry.outcome === "success"
+                                ? "bg-emerald-500/15 text-emerald-300"
+                                : "bg-red-500/15 text-red-300"
+                            )}
+                          >
+                            {entry.outcome}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-[var(--muted)]">
+                          {entry.actor} · {new Date(entry.timestamp).toLocaleString()}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <h3 className="text-base font-semibold">Discovery notes</h3>
+                <div className="mt-4 space-y-3 text-sm text-[var(--muted)]">
+                  <p>Use the catalog when you need a single place to search across apps, containers, and connected services.</p>
+                  <p>The command palette is fastest for tab jumps, opening apps, and running approved safe actions.</p>
+                  <p>The dedicated tabs still hold the operational details when you need deep management controls.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {activeTab === "apps" && (
         <section>
-          <h2 className="mb-4 text-lg font-semibold">All hosted sites & apps</h2>
+          <div className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.9fr]">
+            <div className="rounded-3xl border border-[var(--border)] bg-[linear-gradient(135deg,rgba(34,211,238,0.16),rgba(24,24,27,0.96)_62%)] p-6">
+              <p className="text-xs uppercase tracking-[0.2em] text-[var(--accent)]">Catalog</p>
+              <h2 className="mt-3 text-2xl font-semibold tracking-tight">Discover hosted apps faster</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                This view now follows the Stitch direction more closely: search first, scan status
+                quickly, and load previews only when you actually want them.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full border border-[var(--border)] px-3 py-1 text-[var(--muted)]">
+                  {apps.length} apps detected
+                </span>
+                <span className="rounded-full border border-[var(--border)] px-3 py-1 text-[var(--muted)]">
+                  {dockerContainers.length} containers available
+                </span>
+                <span className="rounded-full border border-[var(--border)] px-3 py-1 text-[var(--muted)]">
+                  {enabledIntegrations.length} integrations enabled
+                  {offlineIntegrations > 0 ? ` · ${offlineIntegrations} need attention` : ""}
+                </span>
+              </div>
+            </div>
+            <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6">
+              <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">Discovery controls</p>
+              <div className="mt-4 space-y-4">
+                <label className="block">
+                  <span className="mb-2 block text-sm text-[var(--muted)]">Search apps</span>
+                  <input
+                    type="text"
+                    value={appsQuery}
+                    onChange={(e) => setAppsQuery(e.target.value)}
+                    placeholder="Search name, process, URL, or port"
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {(["gallery", "list"] as const).map((view) => (
+                    <button
+                      key={view}
+                      onClick={() => setAppsView(view)}
+                      className={cx(
+                        "rounded-xl border px-3 py-2 text-sm transition",
+                        appsView === view
+                          ? "border-[var(--accent)]/40 bg-[var(--accent)]/12 text-[var(--accent)]"
+                          : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--border)]/50"
+                      )}
+                    >
+                      {view === "gallery" ? "Gallery cards" : "Compact list"}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setActiveTab("docker")}
+                    className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] transition hover:bg-[var(--border)]/50"
+                  >
+                    Open containers
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("integrations")}
+                    className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] transition hover:bg-[var(--border)]/50"
+                  >
+                    Manage integrations
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-[var(--foreground)]">
+                {filteredApps.length} of {apps.length} apps visible
+              </p>
+              <p className="text-xs text-[var(--muted)]">
+                Lightweight discovery mode keeps previews on demand instead of loading everything at once.
+              </p>
+            </div>
+            {appsQuery && (
+              <button
+                onClick={() => setAppsQuery("")}
+                className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted)] transition hover:bg-[var(--border)]/50 hover:text-[var(--foreground)]"
+              >
+                Clear search
+              </button>
+            )}
+          </div>
+
           {apps.length === 0 ? (
             <p className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-6 py-12 text-center text-[var(--muted)]">
               No detected apps.
             </p>
-          ) : (
+          ) : filteredApps.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--card)] px-6 py-12 text-center">
+              <p className="text-sm font-medium text-[var(--foreground)]">No apps match that search.</p>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                Try another name, process, URL, or port to find the service you want faster.
+              </p>
+            </div>
+          ) : appsView === "gallery" ? (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {apps.map((app) => (
+              {filteredApps.map((app) => (
                 <AppCard
                   key={`${app.port}-${app.name}`}
                   name={app.name}
@@ -1959,27 +2610,123 @@ export default function Dashboard() {
                 />
               ))}
             </div>
+          ) : (
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+              <div className="divide-y divide-[var(--border)]">
+                {filteredApps.map((app) => (
+                  <div
+                    key={`${app.port}-${app.name}`}
+                    className="flex flex-col gap-3 px-4 py-4 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate font-medium text-[var(--foreground)]">{app.name}</p>
+                        <span className="rounded-full border border-[var(--border)] px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]">
+                          :{app.port}
+                        </span>
+                      </div>
+                      <p className="mt-1 truncate text-sm text-[var(--muted)]">
+                        {app.process || "Unknown process"} · {app.url}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <a
+                        href={app.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-medium text-slate-950 transition hover:bg-cyan-300"
+                      >
+                        Open app
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </section>
       )}
 
       {activeTab === "docker" && (
         <section>
-          <h2 className="mb-4 text-lg font-semibold">Docker containers</h2>
+          <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Docker containers</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Search containers by name, image, state, or exposed ports.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full border border-[var(--border)] px-3 py-1 text-[var(--muted)]">
+                {runningDockerCount}/{dockerContainers.length} running
+              </span>
+              <span className="rounded-full border border-[var(--border)] px-3 py-1 text-[var(--muted)]">
+                {filteredDockerContainers.length} visible
+              </span>
+            </div>
+          </div>
           {dockerAvailable && dockerContainers.length > 0 && (
-            <div className="mb-4 flex justify-end">
-              <button
-                onClick={() => {
-                  const lines = dockerContainers.map((c) => `${c.name.padEnd(32)} ${c.status.padEnd(22)} ${c.ports.join(", ") || "—"}`);
-                  const header = "NAMES".padEnd(32) + "STATUS".padEnd(22) + "PORTS\n" + "-".repeat(80) + "\n";
-                  const snapshot = `# Snapshot ${new Date().toISOString().slice(0, 19)}\n${header}${lines.join("\n")}\n\n`;
-                  setServicesNotes((prev) => snapshot + (prev ? "\n" + prev : ""));
-                  setActiveTab("notes");
-                }}
-                className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-[var(--border)]/50"
-              >
-                Add to Services Notes
-              </button>
+            <div className="mb-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
+              <div className="grid gap-4 lg:grid-cols-[1.15fr_auto_auto] lg:items-end">
+                <label className="block">
+                  <span className="mb-2 block text-sm text-[var(--muted)]">Search containers</span>
+                  <input
+                    type="text"
+                    value={dockerQuery}
+                    onChange={(e) => setDockerQuery(e.target.value)}
+                    placeholder="Search name, image, state, or port"
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-4 py-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                  />
+                </label>
+                <div>
+                  <span className="mb-2 block text-sm text-[var(--muted)]">State</span>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ["all", "All"],
+                      ["running", "Running"],
+                      ["stopped", "Stopped"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        onClick={() => setDockerStateFilter(value)}
+                        className={cx(
+                          "rounded-xl border px-3 py-2 text-sm transition",
+                          dockerStateFilter === value
+                            ? "border-[var(--accent)]/40 bg-[var(--accent)]/12 text-[var(--accent)]"
+                            : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--border)]/50"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 lg:justify-end">
+                  {(dockerQuery || dockerStateFilter !== "all") && (
+                    <button
+                      onClick={() => {
+                        setDockerQuery("");
+                        setDockerStateFilter("all");
+                      }}
+                      className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--muted)] transition hover:bg-[var(--border)]/50 hover:text-[var(--foreground)]"
+                    >
+                      Reset filters
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      const lines = filteredDockerContainers.map((c) => `${c.name.padEnd(32)} ${c.status.padEnd(22)} ${c.ports.join(", ") || "—"}`);
+                      const header = "NAMES".padEnd(32) + "STATUS".padEnd(22) + "PORTS\n" + "-".repeat(80) + "\n";
+                      const snapshot = `# Snapshot ${new Date().toISOString().slice(0, 19)}\n${header}${lines.join("\n")}\n\n`;
+                      setServicesNotes((prev) => snapshot + (prev ? "\n" + prev : ""));
+                      setActiveTab("notes");
+                    }}
+                    className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--border)]/50"
+                  >
+                    Add to Services Notes
+                  </button>
+                </div>
+              </div>
             </div>
           )}
           {!dockerAvailable ? (
@@ -2000,9 +2747,17 @@ export default function Dashboard() {
                 Uses the official Docker install script. Requires sudo/root. Ubuntu/Debian recommended.
               </p>
             </div>
+          ) : filteredDockerContainers.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--card)] px-6 py-12 text-center">
+              <p className="text-sm font-medium text-[var(--foreground)]">No containers match those filters.</p>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                Clear the search or switch state filters to see more of the runtime.
+              </p>
+            </div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
-              <table className="w-full text-left text-sm">
+              <div className="overflow-x-auto">
+              <table className="min-w-[860px] w-full text-left text-sm">
                 <thead className="bg-[var(--card)] text-[var(--muted)]">
                   <tr>
                     <th className="px-4 py-3 font-medium">Name</th>
@@ -2013,7 +2768,7 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {dockerContainers.map((c) => (
+                  {filteredDockerContainers.map((c) => (
                     <tr key={c.id} className="border-t border-[var(--border)] hover:bg-[var(--border)]/50">
                       <td className="px-4 py-2 font-mono">{c.name}</td>
                       <td className="px-4 py-2 text-[var(--muted)]">{c.image}</td>
@@ -2054,6 +2809,7 @@ export default function Dashboard() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
         </section>

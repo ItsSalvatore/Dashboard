@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { existsSync } from "fs";
 import { join } from "path";
 import { requireAuth } from "@/lib/auth";
-
-const execAsync = promisify(exec);
+import { runCommand } from "@/lib/commands";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -38,7 +35,7 @@ export async function GET(
 
     let sslCert: { domain: string; expiry: string } | null = null;
     try {
-      const { stdout } = await execAsync("certbot certificates 2>/dev/null || true");
+      const { stdout } = await runCommand("certbot", ["certificates"]);
       const blocks = stdout.split(/Certificate Name:/).slice(1);
       for (const block of blocks) {
         const domainMatch = block.match(/^\s*(\S+)/);

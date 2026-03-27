@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { requireAuth } from "@/lib/auth";
-
-const execAsync = promisify(exec);
+import { recordAuditEvent } from "@/lib/audit";
+import { runCommand } from "@/lib/commands";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -26,8 +24,8 @@ export async function GET() {
   if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const { stdout: statusOut } = await execAsync("ufw status verbose 2>/dev/null || true");
-    const { stdout: numberedOut } = await execAsync("ufw status numbered 2>/dev/null || true");
+    const { stdout: statusOut } = await runCommand("ufw", ["status", "verbose"]);
+    const { stdout: numberedOut } = await runCommand("ufw", ["status", "numbered"]);
 
     const enabled = statusOut.includes("Status: active");
     const rules: { num: number; raw: string; action?: string }[] = [];
@@ -58,11 +56,23 @@ export async function POST(request: Request) {
   const action = body.action;
 
   if (action === "enable") {
-    await execAsync("ufw --force enable");
+    await runCommand("ufw", ["--force", "enable"]);
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "firewall.enable",
+      actor: "admin",
+      outcome: "success",
+    });
     return NextResponse.json({ ok: true, enabled: true });
   }
   if (action === "disable") {
-    await execAsync("ufw --force disable");
+    await runCommand("ufw", ["--force", "disable"]);
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "firewall.disable",
+      actor: "admin",
+      outcome: "success",
+    });
     return NextResponse.json({ ok: true, enabled: false });
   }
   if (action === "add") {
@@ -73,7 +83,14 @@ export async function POST(request: Request) {
     if (/[;&|`$]/.test(rule)) {
       return NextResponse.json({ error: "Invalid characters in rule" }, { status: 400 });
     }
-    await execAsync(`ufw ${rule}`);
+    await runCommand("ufw", rule.trim().split(/\s+/));
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "firewall.add",
+      actor: "admin",
+      outcome: "success",
+      details: { rule },
+    });
     return NextResponse.json({ ok: true });
   }
   if (action === "delete") {
@@ -81,7 +98,14 @@ export async function POST(request: Request) {
     if (typeof num !== "number" || num < 1) {
       return NextResponse.json({ error: "Invalid rule number" }, { status: 400 });
     }
-    await execAsync(`echo y | ufw delete ${num}`);
+    await runCommand("ufw", ["--force", "delete", String(num)]);
+    await recordAuditEvent({
+      timestamp: new Date().toISOString(),
+      action: "firewall.delete",
+      actor: "admin",
+      outcome: "success",
+      details: { number: num },
+    });
     return NextResponse.json({ ok: true });
   }
 
